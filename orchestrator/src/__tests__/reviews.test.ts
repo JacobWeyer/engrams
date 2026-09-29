@@ -212,24 +212,19 @@ function spawn(
   profileExists = true,
   startIngress?: (input: ReviewIngressStart) => Promise<void>,
   overrides?: {
-    builtins?: import("../reviews/engine-flag.ts").EngineFlagStore;
+    reviewEngine?: import("../db/review-engine.ts").ReviewEngineWriter;
     retryAutomation?: (automationRunId: string) => Promise<string>;
   },
 ) {
-  // A default built-in store so the engine-flag path (UpsertEnrollment with
-  // an engine field) resolves offline. Its repos input starts empty.
-  const builtinRow = {
-    id: "b1",
-    name: "PR review",
-    kind: "builtin",
-    builtinKey: "pr_review",
-    enabled: false,
-    inputs: { repos: {} },
-  } as unknown as import("../db/automations.ts").AutomationRow;
-  const defaultBuiltins: import("../reviews/engine-flag.ts").EngineFlagStore = {
-    getByBuiltinKey: async () => builtinRow,
-    setInputs: async () => builtinRow,
-    setEnabled: async () => builtinRow,
+  // A default review-engine writer so the enrollment path resolves offline:
+  // it flips the row in the enrollment store and reports a reconciled,
+  // enabled built-in.
+  const defaultReviewEngine: import("../db/review-engine.ts").ReviewEngineWriter = {
+    async apply(repo, engine) {
+      const row = enrollments ? await enrollments.setEngine(repo, engine) : null;
+      if (!row) return { kind: "not_enrolled" };
+      return { kind: "applied", enrollment: row, builtinUpdated: true, builtinEnabled: true };
+    },
   };
   const transport = createRouterTransport((router) =>
     registerReviews(router, {
@@ -240,7 +235,7 @@ function spawn(
       profiles: {
         get: async (id) => profileExists ? { id } : null,
       },
-      builtins: overrides?.builtins ?? defaultBuiltins,
+      reviewEngine: overrides?.reviewEngine ?? defaultReviewEngine,
       ...(overrides?.retryAutomation != null ? { retryAutomation: overrides.retryAutomation } : {}),
       ...(startIngress != null
         ? { startIngress, randomUUID: () => "idem-1" }
@@ -420,8 +415,8 @@ describe("ReviewService", () => {
     const enrollments = makeEnrollmentStore([{
       repo: "openai/engrams",
       triggerMode: "manual",
-      engine: "legacy",
       autofix: "off",
+      engine: "legacy",
       profileId: null,
       createdAt: CREATED_AT,
       updatedAt: UPDATED_AT,
@@ -498,36 +493,46 @@ describe("ReviewService", () => {
     );
   });
 
-  test("UpsertEnrollment with engine=automation reconciles the built-in", async () => {
-    const setInputsCalls: Array<Record<string, unknown>> = [];
-    const setEnabledCalls: boolean[] = [];
-    const builtinRow = {
-      id: "b1", name: "PR review", kind: "builtin", builtinKey: "pr_review",
-      enabled: false, inputs: { repos: {} },
-    } as unknown as import("../db/automations.ts").AutomationRow;
-    const builtins = {
-      getByBuiltinKey: async () => builtinRow,
-      setInputs: async (_id: string, inputs: Record<string, unknown>) => {
-        setInputsCalls.push(inputs);
-        return builtinRow;
-      },
-      setEnabled: async (_id: string, enabled: boolean) => {
-        setEnabledCalls.push(enabled);
-        return builtinRow;
+  test("UpsertEnrollment enrolls on the automation engine; Delete flips it back out before the row goes", async () => {
+    const applied: Array<{ repo: string; engine: string }> = [];
+    const enrollmentStore = makeEnrollmentStore([]);
+    const reviewEngine: import("../db/review-engine.ts").ReviewEngineWriter = {
+      async apply(repo, engine) {
+        applied.push({ repo, engine });
+        const row = await enrollmentStore.setEngine(repo, engine);
+        if (!row) return { kind: "not_enrolled" };
+        return { kind: "applied", enrollment: row, builtinUpdated: true, builtinEnabled: true };
       },
     };
-    const admin = spawn(makeStore(null), true, "admin", makeEnrollmentStore([]), true, undefined, { builtins });
+    const admin = spawn(makeStore(null), true, "admin", enrollmentStore, true, undefined, { reviewEngine });
     const response = await admin.upsertEnrollment({
       repo: "openai/engrams",
       triggerMode: "auto",
       autofix: "manual",
-      engine: "automation",
     });
     expect(response.enrollment?.engine).toBe("automation");
-    expect(setInputsCalls.at(-1)!["repos"]).toEqual({
-      "openai/engrams": { mode: "auto", autofix: true },
-    });
-    expect(setEnabledCalls).toEqual([true]);
+    expect(applied).toEqual([{ repo: "openai/engrams", engine: "automation" }]);
+
+    await admin.deleteEnrollment({ repo: "openai/engrams" });
+    expect(applied.at(-1)).toEqual({ repo: "openai/engrams", engine: "legacy" });
+    expect(enrollmentStore.deletes).toEqual(["openai/engrams"]);
+  });
+
+  test("UpsertEnrollment without profile_id keeps the stored override; an empty one clears it", async () => {
+    const enrollmentStore = makeEnrollmentStore([{
+      repo: "openai/engrams",
+      triggerMode: "manual",
+      autofix: "off",
+      engine: "legacy",
+      profileId: "profile-1",
+      createdAt: new Date("2026-07-17T10:00:00Z"),
+      updatedAt: new Date("2026-07-17T10:00:00Z"),
+    }]);
+    const admin = spawn(makeStore(null), true, "admin", enrollmentStore);
+    const kept = await admin.upsertEnrollment({ repo: "openai/engrams", triggerMode: "auto", autofix: "off" });
+    expect(kept.enrollment?.profileId).toBe("profile-1");
+    const cleared = await admin.upsertEnrollment({ repo: "openai/engrams", triggerMode: "auto", autofix: "off", profileId: "" });
+    expect(cleared.enrollment?.profileId ?? "").toBe("");
   });
 
   test("RetryReview requires authentication", async () => {
@@ -570,8 +575,8 @@ describe("ReviewService", () => {
     const enrollments = makeEnrollmentStore([{
       repo: "openai/engrams",
       triggerMode: "auto",
-      engine: "legacy",
       autofix: "manual",
+      engine: "legacy",
       profileId: "profile-1",
       createdAt,
       updatedAt,
@@ -585,7 +590,6 @@ describe("ReviewService", () => {
     expect(response.enrollments[0]).toMatchObject({
       repo: "openai/engrams",
       triggerMode: "auto",
-      engine: "legacy",
       autofix: "manual",
       profileId: "profile-1",
     });
@@ -599,7 +603,6 @@ describe("ReviewService", () => {
     await expectConnectError(member.upsertEnrollment({
       repo: "openai/engrams",
       triggerMode: "manual",
-      engine: "legacy",
       autofix: "off",
     }), Code.PermissionDenied);
     await expectConnectError(
@@ -612,14 +615,12 @@ describe("ReviewService", () => {
     const response = await admin.upsertEnrollment({
       repo: "openai/engrams",
       triggerMode: "auto",
-      engine: "legacy",
       autofix: "manual",
       profileId: "profile-1",
     });
     expect(response.enrollment).toMatchObject({
       repo: "openai/engrams",
       triggerMode: "auto",
-      engine: "legacy",
       autofix: "manual",
       profileId: "profile-1",
     });
@@ -642,7 +643,6 @@ describe("ReviewService", () => {
     await expectConnectError(admin.upsertEnrollment({
       repo: "openai/engrams",
       triggerMode: "manual",
-      engine: "legacy",
       autofix: "always",
     }), Code.InvalidArgument);
   });
@@ -653,7 +653,6 @@ describe("ReviewService", () => {
       await expectConnectError(admin.upsertEnrollment({
         repo,
         triggerMode: "manual",
-      engine: "legacy",
         autofix: "off",
       }), Code.InvalidArgument);
     }
@@ -670,7 +669,6 @@ describe("ReviewService", () => {
     await expectConnectError(admin.upsertEnrollment({
       repo: "openai/engrams",
       triggerMode: "manual",
-      engine: "legacy",
       autofix: "off",
       profileId: "missing-profile",
     }), Code.InvalidArgument);

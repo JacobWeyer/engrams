@@ -16,8 +16,8 @@ import {
   type ReviewTriggerMode,
 } from "../db/enrollments.ts";
 import { makeProfileStore } from "../db/profiles.ts";
-import { makeAutomationStore } from "../db/automations.ts";
-import { setReviewEngine, EngineFlagError, type EngineFlagStore } from "../reviews/engine-flag.ts";
+import { setReviewEngine, EngineFlagError } from "../reviews/engine-flag.ts";
+import { makeReviewEngineWriter, type ReviewEngineWriter } from "../db/review-engine.ts";
 import { retryAutomationReview } from "../reviews/automation-review.ts";
 import { log as rootLog } from "../log.ts";
 import {
@@ -62,7 +62,8 @@ export interface ReviewDeps {
   startIngress?: (input: ReviewIngressStart) => Promise<void>;
   randomUUID?: () => string;
   /** ADR 0119 phase 4.4 seams (default to the production stores). */
-  builtins?: EngineFlagStore;
+  /** The one writer of the enrollment flag + built-in repos map (one transaction). */
+  reviewEngine?: ReviewEngineWriter;
   retryAutomation?: (automationRunId: string) => Promise<string>;
 }
 
@@ -138,6 +139,7 @@ function reviewToProto(row: ReviewRow, counts: FindingCounts): ReviewProto {
     ...(row.headBranch != null ? { headBranch: row.headBranch } : {}),
     ...(row.baseBranch != null ? { baseBranch: row.baseBranch } : {}),
     ...(row.prState != null ? { prState: row.prState } : {}),
+    ...(row.automationRunId != null ? { automationRunId: row.automationRunId } : {}),
     ...(row.additions != null ? { additions: row.additions } : {}),
     ...(row.deletions != null ? { deletions: row.deletions } : {}),
     ...(row.changedFiles != null ? { changedFiles: row.changedFiles } : {}),
@@ -211,8 +213,8 @@ export function registerReviews(router: ConnectRouter, deps?: ReviewDeps): void 
   const startIngress = deps?.startIngress ?? startReviewIngress;
   const randomUUID = deps?.randomUUID ?? (() => crypto.randomUUID());
   const engineLog = rootLog.child({ component: "review-engine-flag" });
-  const builtins = (): EngineFlagStore =>
-    deps?.builtins ?? makeAutomationStore(deps?.db ?? getDb());
+  const reviewEngine = (): ReviewEngineWriter =>
+    deps?.reviewEngine ?? makeReviewEngineWriter(deps?.db ?? getDb());
   const retryAutomation =
     deps?.retryAutomation ?? ((runId: string) => retryAutomationReview(runId));
 
@@ -341,38 +343,37 @@ export function registerReviews(router: ConnectRouter, deps?: ReviewDeps): void 
           Code.InvalidArgument,
         );
       }
-      const profileId = req.profileId?.trim() || null;
-      if (profileId != null && !(await profiles().get(profileId))) {
+      // An omitted profile_id keeps the stored override; an explicit empty
+      // string clears it. The product's dialog no longer carries the field,
+      // and a trigger/autofix edit must never wipe a per-repo profile.
+      const stored = await enrollments().get(repo);
+      const profileId =
+        req.profileId === undefined ? (stored?.profileId ?? null) : req.profileId.trim() || null;
+      if (profileId != null && profileId !== stored?.profileId && !(await profiles().get(profileId))) {
         throw new ConnectError("profile_id does not exist", Code.InvalidArgument);
       }
-      const engine = req.engine?.trim();
-      if (engine !== undefined && engine !== "" && engine !== "legacy" && engine !== "automation") {
-        throw new ConnectError("engine must be legacy or automation", Code.InvalidArgument);
-      }
-      // Upsert first so the row exists (and its trigger/autofix are current)
-      // before the engine flip reconciles the built-in from them.
-      const enrollment = await enrollments().upsert({
+      // Enrolling through the product IS enrolling on the automation engine:
+      // the row is written first (its trigger/autofix feed the built-in's
+      // repos map), then the flag flip reconciles the built-in and enables it
+      // on the first repo. A legacy-flagged row saved again moves over.
+      await enrollments().upsert({
         repo,
         triggerMode: req.triggerMode,
         autofix: req.autofix,
         profileId,
       });
-      if (engine === "legacy" || engine === "automation") {
-        try {
-          const result = await setReviewEngine(repo, engine, {
-            setEnrollmentEngine: (r, e) => enrollments().setEngine(r, e),
-            builtins: builtins(),
-            log: engineLog,
-          });
-          return { enrollment: enrollmentToProto(result.enrollment) };
-        } catch (error) {
-          if (error instanceof EngineFlagError) {
-            throw new ConnectError(error.message, Code.FailedPrecondition);
-          }
-          throw error;
+      try {
+        const result = await setReviewEngine(repo, "automation", {
+          writer: reviewEngine(),
+          log: engineLog,
+        });
+        return { enrollment: enrollmentToProto(result.enrollment) };
+      } catch (error) {
+        if (error instanceof EngineFlagError) {
+          throw new ConnectError(error.message, Code.FailedPrecondition);
         }
+        throw error;
       }
-      return { enrollment: enrollmentToProto(enrollment) };
     },
 
     async deleteEnrollment(req, ctx) {
@@ -382,6 +383,19 @@ export function registerReviews(router: ConnectRouter, deps?: ReviewDeps): void 
       }
       const repo = req.repo.trim();
       if (!repo) throw new ConnectError("repo is required", Code.InvalidArgument);
+      // Take the repo out of the built-in's map first (the flip to `legacy`
+      // is the one writer of that map), then drop the row. A built-in that
+      // is not seeded yet has no map entry to remove.
+      if (await enrollments().get(repo)) {
+        try {
+          await setReviewEngine(repo, "legacy", {
+            writer: reviewEngine(),
+            log: engineLog,
+          });
+        } catch (error) {
+          if (!(error instanceof EngineFlagError)) throw error;
+        }
+      }
       await enrollments().delete(repo);
       return {};
     },
