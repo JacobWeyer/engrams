@@ -28,6 +28,16 @@ Throughout, `PROJECT`, `REGION`, `DOMAIN` (for example `engrams.example.com`),
 `ADMIN_EMAIL`, `EMAIL_DOMAIN` (the Workspace domain whose accounts may sign in, for example
 `example.com`), `OAUTH_CLIENT_ID`, and `OAUTH_CLIENT_SECRET` are yours.
 
+Run every command from a checkout of the newest release. The charts in a release install
+the images of that release; a checkout of `main` can name a version that is not released.
+
+```sh
+git clone https://github.com/cortexapps/engrams.git && cd engrams
+git checkout "$(git tag --list 'v*' --sort=-v:refname | head -n 1)"
+```
+
+To move to a later release afterwards, see [Upgrade engrams](../upgrade/).
+
 ## 1. Enable the APIs
 
 ```sh
@@ -145,8 +155,9 @@ helm install hf deploy/helm/engram-host-fleet \
   -n engrams-hosts -f /tmp/fleet-values.yaml -f /tmp/host-fleet.tfvalues.yaml
 ```
 
-If you pull the engrams images from a private registry, create a pull secret named
-`ghcr-pull` in both namespaces first; the values examples reference that name.
+The engrams images are public, so the install needs no pull secret. If you mirror them
+into a private registry, create a pull secret in both namespaces first and name it under
+`imagePullSecrets` in each values file.
 
 The release names matter. The fleet values dial `engram-coordinator.engrams`, and the
 quickstart's Workload Identity bindings expect the `hf-*` ServiceAccount names. If you use
