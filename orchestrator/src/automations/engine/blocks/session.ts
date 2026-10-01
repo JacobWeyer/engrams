@@ -16,6 +16,7 @@ import { sessionRefSchema } from "../definition.ts";
 import type { RunContext } from "../context.ts";
 import type { AutomationInbox } from "../inbox.ts";
 import { registerBlock, type BlockOutcome } from "./registry.ts";
+import { sessionWebUrl } from "../../../links.ts";
 
 const overrideFields = {
   harnessMode: z.string().min(1).optional(),
@@ -127,6 +128,7 @@ async function executeCreateSession(
       kind: "ok",
       outputs: {
         session_id: dryRunSessionId(ctx),
+        web_url: sessionWebUrl(dryRunSessionId(ctx)),
         task_id: "",
         initial_prompt: prompt.length > 0,
         prompt,
@@ -167,6 +169,9 @@ async function executeCreateSession(
     // prompt starts no harness run, so it must not count as turn 1.
     outputs: {
       session_id: created.sessionId,
+      // The session page: a block that announces the session (the Slack
+      // brain's "Started a session" message) links here.
+      web_url: sessionWebUrl(created.sessionId),
       task_id: created.taskId,
       initial_prompt: prompt.length > 0,
       // The rendered initial prompt (after includeEventContext): downstream
@@ -226,7 +231,7 @@ function matchesSessionMessage(
 export function registerSessionBlocks(): void {
   registerBlock<CreateSessionConfig>({
     type: "create_session",
-    outputs: ["session_id", "task_id", "prompt"],
+    outputs: ["session_id", "web_url", "task_id", "prompt"],
     configSchema: createSessionConfigSchema,
     execute: executeCreateSession,
   });
