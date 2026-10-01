@@ -1,8 +1,8 @@
-/** Live-PG proof of the review engine flip's two guarantees: the flag and
- * the built-in's repos map move together (one transaction), and concurrent
- * flips for different repos never lose each other's map entry. Runs when
- * ORCHESTRATOR_DATABASE_URL points at a migrated database (CI's
- * orchestrator lane), and skips otherwise. */
+/** Live-PG proof of the enrollment sync's guarantees: the enrollment row
+ * and the built-in's repos map move together (one transaction, and no row
+ * without a seeded built-in), and concurrent enrollments for different
+ * repos never lose each other's map entry. Runs when ORCHESTRATOR_DATABASE_URL points at a migrated database
+ * (CI's orchestrator lane), and skips otherwise. */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
@@ -11,7 +11,7 @@ import { eq } from "drizzle-orm";
 import { Pool } from "pg";
 
 import * as schema from "../db/schema.ts";
-import { makeReviewEngineWriter } from "../db/review-engine.ts";
+import { makeReviewEnrollmentSync } from "../db/review-enrollment-sync.ts";
 import { PR_REVIEW_BUILTIN_KEY } from "../automations/builtins/pr-review.ts";
 
 const DB_URL = process.env["ORCHESTRATOR_DATABASE_URL"];
@@ -56,9 +56,6 @@ beforeAll(async () => {
       createdByUserId: null,
     });
   }
-  await db
-    .insert(schema.reviewEnrollment)
-    .values(REPOS.map((repo) => ({ repo, triggerMode: "auto", autofix: "off", engine: "legacy" })));
 });
 
 afterAll(async () => {
@@ -92,35 +89,44 @@ async function reposMap(): Promise<Record<string, unknown>> {
   return (row?.inputs["repos"] as Record<string, unknown> | undefined) ?? {};
 }
 
-describe("review engine writer (live PG)", () => {
+describe("review enrollment sync (live PG)", () => {
+  const enrollment = (repo: string) => ({ repo, triggerMode: "auto" as const, autofix: "off" as const, profileId: null });
+  const rowFor = async (repo: string) =>
+    (await db!.select().from(schema.reviewEnrollment).where(eq(schema.reviewEnrollment.repo, repo)))[0] ?? null;
+
   test.skipIf(!reachable)(
-    "flips the row and patches the map together; a legacy flip removes the entry",
+    "writes the row and the map together and enables the built-in; unenroll removes both",
     async () => {
-      const writer = makeReviewEngineWriter(db!);
-      const result = await writer.apply("rw-test/alpha", "automation");
+      const sync = makeReviewEnrollmentSync(db!);
+      const result = await sync.enroll(enrollment("rw-test/alpha"));
       expect(result.kind).toBe("applied");
       if (result.kind !== "applied") return;
-      expect(result.enrollment.engine).toBe("automation");
-      expect(result.builtinEnabled).toBe(true);
+      expect(result.enrollment.repo).toBe("rw-test/alpha");
+      expect((await rowFor("rw-test/alpha"))?.triggerMode).toBe("auto");
       expect((await reposMap())["rw-test/alpha"]).toEqual({ mode: "auto", autofix: false });
+      const [builtin] = await db!
+        .select({ enabled: schema.automation.enabled })
+        .from(schema.automation)
+        .where(eq(schema.automation.id, builtinId));
+      expect(builtin?.enabled).toBe(true);
 
-      const back = await writer.apply("rw-test/alpha", "legacy");
-      expect(back.kind).toBe("applied");
+      // A second enroll is an update of the same row (no duplicate key).
+      const again = await sync.enroll({ ...enrollment("rw-test/alpha"), triggerMode: "manual" });
+      expect(again.kind).toBe("applied");
+      expect((await reposMap())["rw-test/alpha"]).toEqual({ mode: "on_request", autofix: false });
+
+      await sync.unenroll("rw-test/alpha");
+      expect(await rowFor("rw-test/alpha")).toBeNull();
       expect((await reposMap())["rw-test/alpha"]).toBeUndefined();
-      const [row] = await db!
-        .select()
-        .from(schema.reviewEnrollment)
-        .where(eq(schema.reviewEnrollment.repo, "rw-test/alpha"));
-      expect(row?.engine).toBe("legacy");
     },
   );
 
   test.skipIf(!reachable)(
-    "concurrent flips for different repos all land in the map (no lost update)",
+    "concurrent enrollments for different repos all land in the map (no lost update)",
     async () => {
-      const writer = makeReviewEngineWriter(db!);
+      const sync = makeReviewEnrollmentSync(db!);
       await Promise.all(
-        ["rw-test/beta", "rw-test/gamma", "rw-test/delta"].map((r) => writer.apply(r, "automation")),
+        ["rw-test/beta", "rw-test/gamma", "rw-test/delta"].map((r) => sync.enroll(enrollment(r))),
       );
       const map = await reposMap();
       expect(map["rw-test/beta"]).toEqual({ mode: "auto", autofix: false });
@@ -129,8 +135,8 @@ describe("review engine writer (live PG)", () => {
     },
   );
 
-  test.skipIf(!reachable)("an unenrolled repo writes nothing", async () => {
-    const writer = makeReviewEngineWriter(db!);
-    expect(await writer.apply("rw-test/nobody", "automation")).toEqual({ kind: "not_enrolled" });
+  test.skipIf(!reachable)("unenroll of a repo that was never enrolled is a no-op", async () => {
+    const sync = makeReviewEnrollmentSync(db!);
+    await expect(sync.unenroll("rw-test/nobody")).resolves.toBeUndefined();
   });
 });

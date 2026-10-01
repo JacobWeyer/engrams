@@ -617,6 +617,20 @@
       "when": 1788600000000,
       "tag": "0087_drops",
       "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1790828666479,
+      "tag": "0088_retire_legacy_review_engine",
+      "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1790829589347,
+      "tag": "0089_retire_reviewer_designation",
+      "breakpoints": true
     }
   ]
 }

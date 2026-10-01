@@ -40,7 +40,6 @@
 
 import { config } from "../../config.ts";
 import { normalizeMentionHandle } from "../../integrations/github-webhook.ts";
-import { PR_REVIEWER_DESIGNATION } from "../../reviewers/seed-profile.ts";
 import { REVIEW_CATEGORIES } from "../../reviewers/render.ts";
 import {
   FINDER_SYSTEM_PROMPT,
@@ -62,7 +61,7 @@ export const PR_REVIEW_BUILTIN_KEY = "pr_review";
 
 /** Bump on any graph or inputs-schema change (the seeder inserts a new
  * version when the stored content hash differs). */
-export const PR_REVIEW_DEFINITION_VERSION = 6;
+export const PR_REVIEW_DEFINITION_VERSION = 8;
 
 /** Synthetic event key the CI dispatch edge admits a run under (no GitHub
  * delivery carries it). The admission arm accepts it for any mapped repo. */
@@ -87,6 +86,9 @@ export default ({ event, inputs, trigger }) => {
   const repoKey = fullName.toLowerCase();
   const entry = Object.entries(inputs.repos ?? {}).find(([k]) => k.toLowerCase() === repoKey)?.[1];
   if (!entry) return null;
+  // No reviewer profile picked yet (the Reviews page's one setup step):
+  // nothing can run, so the delivery is filtered rather than failed.
+  if (!inputs.profile) return null;
 
   const key = trigger.event ?? "";
   let mode = null;
@@ -333,6 +335,10 @@ const blocks: BlockDef[] = [
         prNumber: { $ref: "steps.gate.pr_number" },
         commitId: "${{ steps.gate.commit_id }}",
         summary: "${{ steps.gate.summary_md }}",
+        // GitHub refuses the whole batch when one anchor is outside the
+        // diff (422); the action then posts this body instead, which
+        // re-quotes every finding so the PR still shows them.
+        fallbackSummary: "${{ steps.gate.fallback_summary_md }}",
         comments: { $ref: "steps.gate.comments" },
       },
     },
@@ -349,6 +355,9 @@ const blocks: BlockDef[] = [
       // Missing on a replayed post (marker already there): `default` makes
       // the absent output render empty instead of failing the render.
       githubReviewId: "${{ steps.post.github_review_id | default: '' }}",
+      // "false" when the action fell back to the summary-only review: the
+      // findings settle as ui_only and the pass summary follows the PR.
+      inlinePosted: "${{ steps.post.inline_posted | default: true }}",
     },
   },
   {
@@ -423,8 +432,8 @@ export const PR_REVIEW_DEFINITION: AutomationDefinition = {
       key: "profile",
       label: "Reviewer profile",
       type: "string",
-      help: "The session profile the finder and verifier workers run under.",
-      default: PR_REVIEWER_DESIGNATION,
+      help: "The id of the session profile the finder and verifier workers run under. Empty = reviews are off.",
+      default: "",
     },
     {
       key: "mention",
@@ -529,7 +538,7 @@ export const PR_REVIEW_BUILTIN: BuiltinAutomation = {
   async defaultInputs() {
     return {
       repos: {},
-      profile: PR_REVIEWER_DESIGNATION,
+      profile: "",
       mention: defaultMentionHandle(),
       categories: [...REVIEW_CATEGORIES],
       instructions: "",
