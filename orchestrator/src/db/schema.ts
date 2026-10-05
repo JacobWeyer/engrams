@@ -1075,6 +1075,19 @@ export const dbosVersionHeartbeats = pgTable(
 );
 
 /** Durable per-workflow sweep history and operator-control flags. */
+// ---------------------------------------------------------------------------
+// Org settings: one row per setting key, the value a JSON document the
+// owning module validates (db/org-settings.ts). Policies an admin chooses
+// on the Settings page — retention first.
+// ---------------------------------------------------------------------------
+
+export const orgSetting = pgTable("org_setting", {
+  key: text("key").primaryKey(),
+  value: jsonb("value").$type<unknown>().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedByUserId: text("updated_by_user_id"),
+});
+
 export const dbosSweepLedger = pgTable("dbos_sweep_ledger", {
   workflowUuid: text("workflow_uuid").primaryKey(),
   workflowName: text("workflow_name").notNull(),
@@ -1461,9 +1474,17 @@ export const automationRun = pgTable(
     /** A DryRun from the editor: integration actions are stubbed and record
      * what they would have done instead of calling the provider. */
     dryRun: boolean("dry_run").notNull().default(false),
+    /** Set by the retention collector once the run's step rows are deleted
+     * (ADR 0104 amendment): the run page can say so, and the prune's frontier
+     * (ended before the cutoff, not yet pruned) shrinks as it drains. */
+    detailsPrunedAt: timestamp("details_pruned_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    // The retention frontier: ended runs whose details are still kept.
+    index("automation_run_retention_idx")
+      .on(t.endedAt)
+      .where(sql`ended_at is not null and details_pruned_at is null`),
     // ADR 0120 instances — the dedupe split: a cron occurrence fans out one
     // run per open instance (instance_id joins the occurrence identity); an
     // external delivery lands in at most ONE instance (the delivery identity
