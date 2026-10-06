@@ -406,7 +406,7 @@ export function applyAppearance(
   for (const role of ["sans", "display", "mono"] as const)
     root.style.setProperty(
       `--appearance-font-${role}`,
-      FONT_OPTIONS[role].find((font) => font.id === preferences.fonts[role])!.family,
+Derive one list from the other, or export a single shared `FONT_IDS`/font-metadata source from `@engrams/user-preferences` that both the Zod enum and `FONT_OPTIONS` consume. Failing that, add a test asserting `FONT_OPTIONS[role].map(f => f.id)` equals `FONT_IDS[role]` as sets for each role, and replace the `!` lookups with a checked fallback.
     );
   root.style.setProperty(
     "--appearance-display-stretch",
