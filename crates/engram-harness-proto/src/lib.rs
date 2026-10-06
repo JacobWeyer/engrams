@@ -140,13 +140,28 @@ pub struct HarnessAttachAck {
 }
 
 /// One frame on the steady-state full-duplex channel after the
-/// handshake. The harness sends `Event`s, the host sends `Command`s.
+/// handshake. The harness sends sequenced events; the host sends commands
+/// and cumulative acknowledgements. Legacy harnesses can still send `Event`.
 /// Wrapping in a single enum keeps a single bincode-deserializer at
 /// each end.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum HarnessFrame {
     Event(HarnessEvent),
     Command(HarnessCommand),
+    SeqEvent {
+        binding_epoch: u64,
+        seq: u64,
+        event: HarnessEvent,
+        /// A per-process value the SDK draws once at start. A process that
+        /// survives a snapshot keeps it (its replays dedup correctly); a
+        /// fresh process at the same binding epoch gets a new one, so its
+        /// sequence numbers never collide with its predecessor's delivery
+        /// keys at the coordinator.
+        incarnation: u64,
+    },
+    EventAck {
+        seq: u64,
+    },
 }
 
 // ---- Rich file changes (ADR 0054 Flavor A) -----------------------------
@@ -452,6 +467,8 @@ pub enum HarnessEvent {
         /// carries no float-equality / NaN hazards.
         cost_micro_usd: u64,
     },
+    /// The harness re-attached while this run was in flight.
+    RunContinued { run_id: String },
 }
 
 /// Who emitted an [`HarnessEvent::AgentMessage`].
@@ -479,6 +496,7 @@ impl HarnessEvent {
             Self::ToolCallCompleted { .. } => "tool_call_completed",
             Self::RunCompleted { .. } => "run_completed",
             Self::RunInterrupted { .. } => "run_interrupted",
+            Self::RunContinued { .. } => "run_continued",
             Self::PromptQueued { .. } => "prompt_queued",
             Self::PromptEdited { .. } => "prompt_edited",
             Self::PromptDequeued { .. } => "prompt_dequeued",

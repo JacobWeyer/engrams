@@ -176,6 +176,7 @@ pub async fn run_engine(
                     }
                     Some(command) => pending.push_back(command),
                 },
+                // The SDK names the continued run on a new generation.
                 _ = reattach.notified() => {},
             }
         }
@@ -364,7 +365,7 @@ mod tests {
     use super::*;
 
     #[tokio::test(start_paused = true)]
-    async fn prompt_run_keeps_its_tool_sleep_across_reattach() {
+    async fn reattach_mid_turn_announces_run_continued() {
         let channels = Channels::new();
         let mut events = channels.event_rx;
         let engine = tokio::spawn(run_engine(
@@ -402,6 +403,8 @@ mod tests {
             Some(HarnessEvent::ToolCallStarted { .. })
         ));
         tokio::time::advance(Duration::from_secs(4)).await;
+        // A mid-run reattach is silent at the engine; the SDK announces
+        // the continued run on a new generation.
         channels.reattach.notify_one();
         tokio::task::yield_now().await;
         assert!(events.try_recv().is_err());
