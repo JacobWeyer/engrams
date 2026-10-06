@@ -254,6 +254,21 @@ impl GrpcHostClient {
         decode_bincode(&resp.metadata_bincode, "SnapshotMetadata")
     }
 
+    pub async fn snapshot_hold(
+        &self,
+        id: SandboxId,
+        fence: SessionFence,
+    ) -> Result<SnapshotMetadata, SandboxError> {
+        let resp = self
+            .inner
+            .clone()
+            .snapshot_hold(fenced_request(id, fence))
+            .await
+            .map_err(grpc_to_sandbox_err)?
+            .into_inner();
+        decode_bincode(&resp.metadata_bincode, "SnapshotMetadata")
+    }
+
     /// ADR 0045 D5. An `Unimplemented` status from a pre-D5 host-agent
     /// maps to `InvalidSpec` (same shape as the trait default), which the
     /// coordinator treats as "fall back to the composed snapshot()".
@@ -1600,6 +1615,14 @@ impl HostClient for GrpcHostClient {
         Self::snapshot(self, id, fence).await
     }
 
+    async fn snapshot_hold(
+        &self,
+        id: SandboxId,
+        fence: SessionFence,
+    ) -> Result<SnapshotMetadata, SandboxError> {
+        Self::snapshot_hold(self, id, fence).await
+    }
+
     async fn snapshot_begin(
         &self,
         id: SandboxId,
@@ -1745,13 +1768,14 @@ impl HostClient for GrpcHostClient {
         Self::guest_ip(self, id).await
     }
 
-    async fn bind_session(&self, session_id: SessionId, sandbox_id: SandboxId, binding_epoch: u64) {
-        if let Err(e) = self
-            .bind_harness_session(session_id, sandbox_id, binding_epoch)
+    async fn bind_session(
+        &self,
+        session_id: SessionId,
+        sandbox_id: SandboxId,
+        binding_epoch: u64,
+    ) -> Result<(), engram_core::SandboxError> {
+        self.bind_harness_session(session_id, sandbox_id, binding_epoch)
             .await
-        {
-            tracing::warn!(%session_id, %sandbox_id, binding_epoch, error = %e, "gRPC bind_harness_session failed");
-        }
     }
 
     async fn unbind_session(&self, session_id: SessionId) {

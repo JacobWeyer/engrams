@@ -8,6 +8,8 @@ use engram_core::types::host::{
     CordonOwner, HeartbeatAck, HostLeaseState, RetirementBlocker, RetirementGrant,
     RetirementStatus, ENABLE_MATERIALIZE_LEASE_SECS,
 };
+use engram_core::types::ids::TeleportId;
+use engram_core::types::teleport::*;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -78,12 +80,51 @@ fn reserved_budgets(db: &SimDb) -> std::collections::BTreeMap<HostId, (i64, i64)
                 .contains(&r.phase.as_str())
         })
         .map(|r| (r.dest_host_id, r.mem_budget_mib, r.cpu_budget_vcpus));
-    for (h, mem, cpu) in sessions.chain(captures).chain(teleports) {
+    let sources = db
+        .teleports
+        .values()
+        .filter(|r| {
+            engram_core::types::teleport::TeleportPhase::source_reserving_phases()
+                .contains(&r.phase.as_str())
+        })
+        .map(|r| (r.source_host_id, r.mem_budget_mib, r.cpu_budget_vcpus));
+    for (h, mem, cpu) in sessions.chain(captures).chain(teleports).chain(sources) {
         let e = out.entry(h).or_default();
         e.0 += mem;
         e.1 += i64::from(cpu);
     }
     out
+}
+
+fn append_teleport_finished(
+    db: &mut SimDb,
+    id: TeleportId,
+    now: DateTime<Utc>,
+) -> Option<(SessionId, i64)> {
+    let r = db.teleports.get(&id)?;
+    if !r.phase.is_terminal() {
+        return None;
+    }
+    let sid = r.session_id;
+    let payload = serde_json::json!({"type":"teleport_finished","teleport_id":r.id,"outcome":r.phase.as_str(),"kind":r.kind,"dest_host_id":r.dest_host_id,"error":r.error,"at":now,"idempotency_key":format!("teleport:{}:finished",r.id)});
+    let s = db.sessions.get_mut(&sid).expect("teleport session");
+    let idx = s.next_event_idx;
+    s.next_event_idx += 1;
+    s.updated_at = now;
+    s.session.last_event_at = Some(now);
+    let recovery_epoch = s.recovery_epoch;
+    db.session_events
+        .entry(sid)
+        .or_default()
+        .push(PersistedEvent {
+            idx,
+            kind: "teleport_finished".into(),
+            payload,
+            created_at: now,
+            recovery_epoch,
+            rewound_at: None,
+        });
+    Some((sid, idx))
 }
 
 fn enable_work(
@@ -243,6 +284,362 @@ impl SimMetadataStore {
 
 #[async_trait]
 impl MetadataStore for SimMetadataStore {
+    async fn session_binding_generations(&self, id: SessionId) -> Result<(u64, u64), MetaError> {
+        self.gate()?;
+        let db = self.db.lock();
+        let r = db.sessions.get(&id).ok_or(MetaError::NotFound)?;
+        Ok((r.binding_epoch as u64, r.attached_binding_epoch as u64))
+    }
+
+    async fn teleport_admit(
+        &self,
+        req: TeleportAdmitRequest,
+    ) -> Result<TeleportAdmitOutcome, MetaError> {
+        self.gate()?;
+        let now = self.now();
+        let mut db = self.db.lock();
+        let Some(s) = db
+            .sessions
+            .get(&req.session_id)
+            .filter(|s| s.current_epoch == req.epoch)
+        else {
+            return Ok(TeleportAdmitOutcome::Fenced);
+        };
+        if db
+            .teleports
+            .values()
+            .any(|r| r.session_id == req.session_id && !r.phase.is_terminal())
+        {
+            return Err(MetaError::Conflict(
+                "session already has an open teleport".into(),
+            ));
+        }
+        if s.session.status != SessionState::Active {
+            return Ok(TeleportAdmitOutcome::SessionNotActive(s.session.status));
+        }
+        let (Some(source), Some(sandbox)) = (s.session.host_id, s.session.sandbox_id) else {
+            return Err(MetaError::Conflict(
+                "active session has no source binding".into(),
+            ));
+        };
+        let candidates: Vec<_> = req
+            .pinned_dest
+            .map(|h| vec![h])
+            .unwrap_or(req.candidates)
+            .into_iter()
+            .filter(|h| {
+                *h != source
+                    && db
+                        .teleports
+                        .values()
+                        .filter(|r| r.dest_host_id == *h && !r.phase.is_terminal())
+                        .count()
+                        < req.max_open_per_dest as usize
+            })
+            .collect();
+        let Some(dest) = Self::pick_host_2d(
+            &db,
+            &candidates,
+            0,
+            req.mem_budget_mib,
+            req.cpu_budget_vcpus,
+        ) else {
+            return Ok(TeleportAdmitOutcome::NoFit);
+        };
+        if db.teleports.contains_key(&req.id) {
+            return Err(MetaError::Conflict("teleport already exists".into()));
+        }
+        let row = TeleportRow {
+            id: req.id,
+            session_id: req.session_id,
+            kind: if req.live_capable {
+                TeleportKind::Live
+            } else {
+                TeleportKind::Snapshot
+            },
+            reason: req.reason,
+            phase: TeleportPhase::Admitted,
+            source_host_id: source,
+            source_sandbox_id: sandbox,
+            dest_host_id: dest,
+            dest_sandbox_id: None,
+            pinned_dest: req.pinned_dest.is_some(),
+            mem_budget_mib: req.mem_budget_mib,
+            cpu_budget_vcpus: i32::try_from(req.cpu_budget_vcpus)
+                .map_err(|e| MetaError::Serialization(e.to_string()))?,
+            snapshot_id: None,
+            export_id: None,
+            live_payload: None,
+            attempts: 0,
+            error: None,
+            created_at: now,
+            updated_at: now,
+            finished_at: None,
+        };
+        let s = db
+            .sessions
+            .get_mut(&req.session_id)
+            .expect("locked session");
+        s.session.status = SessionState::Evacuating;
+        s.session.last_active_at = now;
+        s.session.last_event_at = Some(now);
+        s.updated_at = now;
+        let idx = s.next_event_idx;
+        s.next_event_idx += 1;
+        let recovery_epoch = s.recovery_epoch;
+        db.session_events.entry(req.session_id).or_default().push(PersistedEvent {idx, kind:"status_changed".into(),payload:serde_json::json!({"type":"status_changed","from":"active","to":"evacuating","at":now,"idempotency_key":format!("teleport:{}:admitted",req.id)}),created_at:now,recovery_epoch,rewound_at:None});
+        db.transition_log.push(super::TransitionLogEntry {
+            session: req.session_id,
+            from: SessionState::Active,
+            to: SessionState::Evacuating,
+            exempt: false,
+        });
+        db.teleports.insert(req.id, row.clone());
+        drop(db);
+        self.notify(
+            "session_events",
+            format!("{{\"session_id\":\"{}\",\"idx\":{idx}}}", req.session_id),
+        );
+        Ok(TeleportAdmitOutcome::Admitted(Box::new(row)))
+    }
+    async fn teleport_advance(
+        &self,
+        id: TeleportId,
+        from: TeleportPhase,
+        to: TeleportPhase,
+        patch: TeleportPatch,
+        epoch: i64,
+    ) -> Result<bool, MetaError> {
+        self.gate()?;
+        if !from.can_transition_to(to) {
+            return Err(MetaError::Conflict(format!(
+                "illegal teleport phase: {from:?} -> {to:?}"
+            )));
+        }
+        let mut db = self.db.lock();
+        let Some(r) = db.teleports.get(&id) else {
+            return Ok(false);
+        };
+        if r.phase != from
+            || db
+                .sessions
+                .get(&r.session_id)
+                .is_none_or(|s| s.current_epoch != epoch)
+        {
+            return Ok(false);
+        }
+        let r = db.teleports.get_mut(&id).expect("locked teleport");
+        r.phase = to;
+        r.dest_sandbox_id = patch.dest_sandbox_id.or(r.dest_sandbox_id);
+        r.snapshot_id = patch.snapshot_id.or(r.snapshot_id);
+        r.export_id = patch.export_id.or(r.export_id.take());
+        r.live_payload = patch.live_payload.or(r.live_payload.take());
+        r.kind = patch.kind.unwrap_or(r.kind);
+        r.error = patch.error;
+        r.attempts += 1;
+        r.updated_at = self.now();
+        r.finished_at = to.is_terminal().then_some(r.updated_at);
+        let event = append_teleport_finished(&mut db, id, self.now());
+        drop(db);
+        if let Some((sid, idx)) = event {
+            self.notify(
+                "session_events",
+                format!("{{\"session_id\":\"{sid}\",\"idx\":{idx}}}"),
+            );
+        }
+        Ok(true)
+    }
+    async fn teleport_commit(&self, id: TeleportId, epoch: i64) -> Result<Option<u64>, MetaError> {
+        self.gate()?;
+        let mut db = self.db.lock();
+        let Some(r) = db
+            .teleports
+            .get(&id)
+            .cloned()
+            .filter(|r| r.phase == TeleportPhase::Restored && r.dest_sandbox_id.is_some())
+        else {
+            return Ok(None);
+        };
+        let Some(s) = db.sessions.get_mut(&r.session_id).filter(|s| {
+            s.current_epoch == epoch
+                && s.session.status == SessionState::Evacuating
+                && s.session.host_id == Some(r.source_host_id)
+                && s.session.sandbox_id == Some(r.source_sandbox_id)
+        }) else {
+            return Ok(None);
+        };
+        s.session.host_id = Some(r.dest_host_id);
+        s.session.sandbox_id = r.dest_sandbox_id;
+        s.binding_epoch += 1;
+        s.missing_strikes = 0;
+        s.updated_at = self.now();
+        let minted = s.binding_epoch as u64;
+        let r = db.teleports.get_mut(&id).expect("locked teleport");
+        r.phase = TeleportPhase::Committed;
+        r.attempts += 1;
+        r.updated_at = self.now();
+        drop(db);
+        self.notify("placement_changed", "teleport_committed");
+        Ok(Some(minted))
+    }
+    async fn teleport_release_source(
+        &self,
+        id: TeleportId,
+        epoch: i64,
+        how: SourceRelease,
+    ) -> Result<bool, MetaError> {
+        self.gate()?;
+        let mut db = self.db.lock();
+        let Some(r) = db.teleports.get(&id).cloned() else {
+            return Ok(false);
+        };
+        if r.phase != TeleportPhase::Attached
+            || db
+                .sessions
+                .get(&r.session_id)
+                .is_none_or(|s| s.current_epoch != epoch)
+        {
+            return Ok(false);
+        }
+        if matches!(how, SourceRelease::SourceHostGone)
+            && !db
+                .hosts
+                .get(&r.source_host_id)
+                .is_none_or(|h| matches!(h.status, HostStatus::Dead | HostStatus::Retired))
+        {
+            return Ok(false);
+        }
+        let now = self.now();
+        db.sandbox_tombstones
+            .entry((r.source_host_id, r.source_sandbox_id))
+            .or_insert((Some(r.session_id), now));
+        let r = db.teleports.get_mut(&id).expect("locked teleport");
+        r.phase = TeleportPhase::Done;
+        r.attempts += 1;
+        r.updated_at = now;
+        r.finished_at = Some(now);
+        let event = append_teleport_finished(&mut db, id, self.now());
+        drop(db);
+        if let Some((sid, idx)) = event {
+            self.notify(
+                "session_events",
+                format!("{{\"session_id\":\"{sid}\",\"idx\":{idx}}}"),
+            );
+        }
+        Ok(true)
+    }
+    async fn teleport_settle(
+        &self,
+        id: TeleportId,
+        epoch: i64,
+        settle: TeleportSettle,
+    ) -> Result<bool, MetaError> {
+        self.gate()?;
+        let now = self.now();
+        let mut db = self.db.lock();
+        let Some(r) = db.teleports.get(&id).cloned() else {
+            return Ok(false);
+        };
+        if r.phase.is_terminal()
+            || db
+                .sessions
+                .get(&r.session_id)
+                .is_none_or(|s| s.current_epoch != epoch)
+        {
+            return Ok(false);
+        }
+        let mut events = Vec::new();
+        if let Some(target) = settle.session {
+            let s = db.sessions.get_mut(&r.session_id).expect("fenced session");
+            let current = s.session.status;
+            current
+                .try_transition_to(target)
+                .map_err(|e| MetaError::Conflict(e.to_string()))?;
+            s.session.status = target;
+            s.session.sandbox_id = None;
+            s.updated_at = now;
+            if let Some(idx) = append_event_idempotent_locked(
+                &mut db,
+                r.session_id,
+                &format!("teleport:{id}:settled"),
+                "status_changed",
+                serde_json::json!({"type":"status_changed","from":current.as_str(),"to":target.as_str(),"at":now}),
+                now,
+            )? {
+                events.push((r.session_id, idx));
+            }
+        }
+        if settle.entomb_source {
+            db.sandbox_tombstones
+                .entry((r.source_host_id, r.source_sandbox_id))
+                .or_insert((Some(r.session_id), now));
+        }
+        let row = db.teleports.get_mut(&id).expect("locked teleport");
+        row.phase = TeleportPhase::Failed;
+        row.error = Some(settle.error);
+        row.attempts += 1;
+        row.updated_at = now;
+        row.finished_at = Some(now);
+        events.extend(append_teleport_finished(&mut db, id, now));
+        drop(db);
+        for (sid, idx) in events {
+            self.notify(
+                "session_events",
+                format!("{{\"session_id\":\"{sid}\",\"idx\":{idx}}}"),
+            );
+        }
+        if settle.session.is_some() {
+            self.notify("placement_changed", "teleport_settled");
+        }
+        Ok(true)
+    }
+    async fn teleport_abort(&self, id: TeleportId, epoch: i64) -> Result<bool, MetaError> {
+        self.gate()?;
+        let error = self
+            .db
+            .lock()
+            .teleports
+            .get(&id)
+            .and_then(|r| r.error.clone());
+        self.teleport_advance(
+            id,
+            TeleportPhase::RollingBack,
+            TeleportPhase::Aborted,
+            TeleportPatch {
+                error,
+                ..Default::default()
+            },
+            epoch,
+        )
+        .await
+    }
+    async fn list_open_teleports(&self) -> Result<Vec<TeleportRow>, MetaError> {
+        self.gate()?;
+        let mut rows: Vec<_> = self
+            .db
+            .lock()
+            .teleports
+            .values()
+            .filter(|r| !r.phase.is_terminal())
+            .cloned()
+            .collect();
+        rows.sort_by_key(|r| (r.created_at, r.id));
+        Ok(rows)
+    }
+    async fn open_teleport_for_session(
+        &self,
+        sid: SessionId,
+    ) -> Result<Option<TeleportRow>, MetaError> {
+        self.gate()?;
+        Ok(self
+            .db
+            .lock()
+            .teleports
+            .values()
+            .find(|r| r.session_id == sid && !r.phase.is_terminal())
+            .cloned())
+    }
+
     // ================= sessions =================
 
     /// `INSERT INTO sessions (id, status='pending', image_uri, mode,
@@ -282,7 +679,6 @@ impl MetadataStore for SimMetadataStore {
                 recovery_epoch: 0,
                 shell_pinned_until: None,
                 durable_head: None,
-                evac_attempts: 0,
                 evict_attempts: 0,
                 updated_at: now,
             },
@@ -296,7 +692,7 @@ impl MetadataStore for SimMetadataStore {
         &self,
         id: SessionId,
         sandbox_id: engram_core::SandboxId,
-    ) -> Result<(), MetaError> {
+    ) -> Result<u64, MetaError> {
         self.gate()?;
         let now = self.now();
         let mut db = self.db.lock();
@@ -307,13 +703,15 @@ impl MetadataStore for SimMetadataStore {
         row.session.status = SessionState::Created;
         row.session.sandbox_id = Some(sandbox_id);
         row.session.last_active_at = now;
+        row.binding_epoch += 1;
+        let epoch = row.binding_epoch as u64;
         db.transition_log.push(super::TransitionLogEntry {
             session: id,
             from: SessionState::Pending,
             to: SessionState::Created,
             exempt: false,
         });
-        Ok(())
+        Ok(epoch)
     }
 
     async fn get_session(&self, id: SessionId) -> Result<Session, MetaError> {
@@ -409,7 +807,6 @@ impl MetadataStore for SimMetadataStore {
                 recovery_epoch: 0,
                 shell_pinned_until: None,
                 durable_head: None,
-                evac_attempts: 0,
                 evict_attempts: 0,
                 updated_at: now,
             },
@@ -489,9 +886,6 @@ impl MetadataStore for SimMetadataStore {
         };
         row.session.last_active_at = now;
         row.updated_at = now;
-        if target == SessionState::Evacuating {
-            row.evac_attempts = 0;
-        }
         if target == SessionState::Evicting {
             row.evict_attempts = 0;
         }
@@ -546,46 +940,6 @@ impl MetadataStore for SimMetadataStore {
         row.session.host_id = host_id;
         row.updated_at = now;
         Ok(())
-    }
-
-    /// Bind: set sandbox + reset strikes. Unbind (None): also clears the
-    /// live disk manifest and bumps chunk_generation (same tx).
-    async fn assign_session_sandbox(
-        &self,
-        id: SessionId,
-        sandbox_id: Option<engram_core::SandboxId>,
-    ) -> Result<(), MetaError> {
-        self.gate()?;
-        let now = self.now();
-        let mut db = self.db.lock();
-        let row = db.sessions.get_mut(&id).ok_or(MetaError::NotFound)?;
-        row.session.sandbox_id = sandbox_id;
-        row.missing_strikes = 0;
-        row.updated_at = now;
-        if sandbox_id.is_none() {
-            row.session.live_disk_manifest = None;
-            db.chunk_generation += 1;
-        }
-        Ok(())
-    }
-
-    /// `UPDATE sessions SET binding_epoch = binding_epoch + 1 ...
-    /// RETURNING binding_epoch`.
-    async fn mint_binding_epoch(&self, id: SessionId) -> Result<u64, MetaError> {
-        self.gate()?;
-        let mut db = self.db.lock();
-        let row = db.sessions.get_mut(&id).ok_or(MetaError::NotFound)?;
-        row.binding_epoch += 1;
-        Ok(row.binding_epoch as u64)
-    }
-
-    async fn current_binding_epoch(&self, id: SessionId) -> Result<u64, MetaError> {
-        self.gate()?;
-        let db = self.db.lock();
-        db.sessions
-            .get(&id)
-            .map(|r| r.binding_epoch as u64)
-            .ok_or(MetaError::NotFound)
     }
 
     /// Fenced on status='idle' AND current_epoch=$2; true iff the flip
@@ -1065,8 +1419,15 @@ impl MetadataStore for SimMetadataStore {
         let mut out = Vec::new();
         let mut log = Vec::new();
         let mut tombstones = Vec::new();
+        let owned: std::collections::BTreeSet<_> = db
+            .teleports
+            .values()
+            .filter(|r| r.source_host_id == host_id && !r.phase.is_terminal())
+            .map(|r| r.session_id)
+            .collect();
         for row in db.sessions.values_mut() {
             if row.session.host_id == Some(host_id)
+                && !owned.contains(&row.session.id)
                 && !matches!(
                     row.session.status,
                     SessionState::Completed | SessionState::Failed | SessionState::Dead
@@ -1137,10 +1498,19 @@ impl MetadataStore for SimMetadataStore {
             .capture_jobs
             .values()
             .any(|job| job.host_id == Some(host_id) && !job.stage.is_terminal());
+        // ADR 0123 B: an open move owns both endpoints (see the PG twin).
+        let move_owned = |s: &engram_core::SandboxId| {
+            db.teleports.values().any(|t| {
+                !t.phase.is_terminal()
+                    && (t.source_sandbox_id == *s
+                        || t.dest_sandbox_id == Some(*s)
+                        || (t.dest_host_id == host_id && t.dest_sandbox_id.is_none()))
+            })
+        };
         let unbound: Vec<engram_core::SandboxId> = running
             .iter()
             .copied()
-            .filter(|s| !capture_active && !bound.contains(s))
+            .filter(|s| !capture_active && !bound.contains(s) && !move_owned(s))
             .collect();
         db.sandbox_unbound_sightings
             .retain(|(h, s), _| *h != host_id || unbound.contains(s));
@@ -1469,6 +1839,92 @@ impl MetadataStore for SimMetadataStore {
     /// CTE mirror: atomically allocate next_event_idx from the session
     /// row (missing session -> NotFound), stamp recovery_epoch, insert,
     /// pg_notify('session_events', {session_id, idx}).
+    async fn settle_harness_generation(
+        &self,
+        session: SessionId,
+        epoch: u64,
+        continued: &[String],
+        now: DateTime<Utc>,
+    ) -> Result<Vec<engram_core::types::session::SettledRun>, MetaError> {
+        self.gate()?;
+        let epoch = i64::try_from(epoch).map_err(|e| MetaError::Serialization(e.to_string()))?;
+        let mut db = self.db.lock();
+        let Some(row) = db.sessions.get_mut(&session) else {
+            return Ok(Vec::new());
+        };
+        if row.attached_binding_epoch >= epoch {
+            return Ok(Vec::new());
+        }
+        row.attached_binding_epoch = epoch;
+        let events = db.session_events.get(&session).cloned().unwrap_or_default();
+        let runs: std::collections::BTreeSet<String> = events
+            .iter()
+            .filter(|event| event.kind == "run_started")
+            .filter_map(|started| {
+                let run = started.payload.get("run_id")?.as_str()?;
+                if continued.iter().any(|c| c == run) {
+                    return None;
+                }
+                (!events.iter().any(|ended| {
+                    ended.idx > started.idx
+                        && matches!(ended.kind.as_str(), "run_completed" | "run_interrupted")
+                        && ended.payload.get("run_id").and_then(|v| v.as_str()) == Some(run)
+                }))
+                .then(|| run.to_string())
+            })
+            .collect();
+        let mut settled = Vec::new();
+        let mut indices = Vec::new();
+        for run in runs {
+            let payload = serde_json::json!({"type": "harness_run_interrupted", "run_id": run,
+                "cause": "harness_replaced", "at": now});
+            if let Some(idx) = append_event_idempotent_locked(
+                &mut db,
+                session,
+                &format!("run_interrupted:{run}"),
+                "run_interrupted",
+                payload,
+                now,
+            )? {
+                settled.push(engram_core::types::session::SettledRun { run_id: run, idx });
+                indices.push(idx);
+            }
+        }
+        drop(db);
+        for idx in indices {
+            self.notify(
+                "session_events",
+                serde_json::json!({"session_id": session, "idx": idx}).to_string(),
+            );
+        }
+        Ok(settled)
+    }
+
+    async fn append_session_event_idempotent(
+        &self,
+        session: SessionId,
+        key: &str,
+        kind: &str,
+        payload: serde_json::Value,
+    ) -> Result<Option<i64>, MetaError> {
+        self.gate()?;
+        let idx = append_event_idempotent_locked(
+            &mut self.db.lock(),
+            session,
+            key,
+            kind,
+            payload,
+            self.now(),
+        )?;
+        if let Some(idx) = idx {
+            self.notify(
+                "session_events",
+                serde_json::json!({"session_id": session, "idx": idx}).to_string(),
+            );
+        }
+        Ok(idx)
+    }
+
     async fn append_session_event(
         &self,
         session_id: SessionId,
@@ -1973,9 +2429,6 @@ impl MetadataStore for SimMetadataStore {
         };
         row.session.last_active_at = now;
         row.updated_at = now;
-        if to == SessionState::Evacuating {
-            row.evac_attempts = 0;
-        }
         if to == SessionState::Evicting {
             row.evict_attempts = 0;
         }
@@ -2033,9 +2486,6 @@ impl MetadataStore for SimMetadataStore {
         if matches!(disposition, BindingDisposition::Detach) {
             row.session.sandbox_id = None;
         }
-        if to == SessionState::Evacuating {
-            row.evac_attempts = 0;
-        }
         if to == SessionState::Evicting {
             row.evict_attempts = 0;
         }
@@ -2088,28 +2538,37 @@ impl MetadataStore for SimMetadataStore {
         Ok(Some((current, indices)))
     }
 
-    /// `WHERE id=$1 AND current_epoch=$4`; bool = landed.
+    /// A stale fence conflicts; a set mints, and a clear returns None.
     async fn fenced_assign_sandbox(
         &self,
         session_id: SessionId,
         epoch: i64,
         sandbox_id: Option<engram_core::SandboxId>,
         host_id: Option<HostId>,
-    ) -> Result<bool, MetaError> {
+    ) -> Result<Option<u64>, MetaError> {
         self.gate()?;
         let now = self.now();
         let mut db = self.db.lock();
         let Some(r) = db.sessions.get_mut(&session_id) else {
-            return Ok(false);
+            return Err(MetaError::Conflict("stale session fence".into()));
         };
         if r.current_epoch != epoch {
-            return Ok(false);
+            return Err(MetaError::Conflict("stale session fence".into()));
         }
         r.session.sandbox_id = sandbox_id;
+        r.missing_strikes = 0;
         r.session.host_id = host_id;
         r.session.last_active_at = now;
         r.updated_at = now;
-        Ok(true)
+        let binding_epoch = sandbox_id.map(|_| {
+            r.binding_epoch += 1;
+            r.binding_epoch as u64
+        });
+        if sandbox_id.is_none() {
+            r.session.live_disk_manifest = None;
+            db.chunk_generation += 1;
+        }
+        Ok(binding_epoch)
     }
 
     /// CAS on expected sandbox + allowed states; distinct Conflict
@@ -2120,7 +2579,7 @@ impl MetadataStore for SimMetadataStore {
         sandbox_id: Option<engram_core::SandboxId>,
         expected_current: Option<Option<engram_core::SandboxId>>,
         allowed_states: &[SessionState],
-    ) -> Result<(), MetaError> {
+    ) -> Result<Option<u64>, MetaError> {
         self.gate()?;
         let now = self.now();
         let mut db = self.db.lock();
@@ -2130,14 +2589,14 @@ impl MetadataStore for SimMetadataStore {
         if let Some(expected) = expected_current {
             if r.session.sandbox_id != expected {
                 return Err(MetaError::Conflict(format!(
-                    "assign_session_sandbox CAS: sandbox_id is {:?}, expected {:?}",
+                    "assign_session_sandbox_guarded CAS: sandbox_id is {:?}, expected {:?}",
                     r.session.sandbox_id, expected
                 )));
             }
         }
         if !allowed_states.is_empty() && !allowed_states.contains(&r.session.status) {
             return Err(MetaError::Conflict(format!(
-                "assign_session_sandbox CAS: status is {}, not in {:?}",
+                "assign_session_sandbox_guarded CAS: status is {}, not in {:?}",
                 r.session.status.as_str(),
                 allowed_states
             )));
@@ -2145,11 +2604,15 @@ impl MetadataStore for SimMetadataStore {
         r.session.sandbox_id = sandbox_id;
         r.missing_strikes = 0;
         r.updated_at = now;
+        let epoch = sandbox_id.map(|_| {
+            r.binding_epoch += 1;
+            r.binding_epoch as u64
+        });
         if sandbox_id.is_none() {
             r.session.live_disk_manifest = None;
             db.chunk_generation += 1;
         }
-        Ok(())
+        Ok(epoch)
     }
 
     // ================= session ops (ADR 0079) =================
@@ -3239,24 +3702,6 @@ impl MetadataStore for SimMetadataStore {
             .map(|r| (r.session.host_id.expect("filtered"), r.session.status)))
     }
 
-    /// Blind rebind: host+sandbox set, strikes reset. NotFound on 0 rows.
-    async fn rebind_session(
-        &self,
-        id: SessionId,
-        host_id: HostId,
-        sandbox_id: engram_core::SandboxId,
-    ) -> Result<(), MetaError> {
-        self.gate()?;
-        let now = self.now();
-        let mut db = self.db.lock();
-        let r = db.sessions.get_mut(&id).ok_or(MetaError::NotFound)?;
-        r.session.host_id = Some(host_id);
-        r.session.sandbox_id = Some(sandbox_id);
-        r.missing_strikes = 0;
-        r.updated_at = now;
-        Ok(())
-    }
-
     /// Same CAS predicates as the sandbox-guarded sibling.
     async fn assign_session_host_guarded(
         &self,
@@ -3284,17 +3729,6 @@ impl MetadataStore for SimMetadataStore {
         r.session.host_id = host_id;
         r.updated_at = now;
         Ok(())
-    }
-
-    async fn list_evacuating_sessions(&self) -> Result<Vec<(Session, u32)>, MetaError> {
-        self.gate()?;
-        let db = self.db.lock();
-        Ok(db
-            .sessions
-            .values()
-            .filter(|r| r.session.status == SessionState::Evacuating)
-            .map(|r| (r.session.clone(), r.evac_attempts.max(0) as u32))
-            .collect())
     }
 
     async fn list_host_lost_sessions(&self) -> Result<Vec<Session>, MetaError> {
@@ -3407,17 +3841,6 @@ impl MetadataStore for SimMetadataStore {
         // a memory-reserving state's budget — wake the queue scanner.
         self.notify("placement_changed", "session_freed");
         Ok(Some(indices))
-    }
-
-    async fn bump_evac_attempts(&self, session_id: SessionId) -> Result<u32, MetaError> {
-        self.gate()?;
-        let mut db = self.db.lock();
-        let r = db
-            .sessions
-            .get_mut(&session_id)
-            .ok_or(MetaError::NotFound)?;
-        r.evac_attempts += 1;
-        Ok(r.evac_attempts.max(0) as u32)
     }
 
     async fn bump_evict_attempts(&self, session_id: SessionId) -> Result<u32, MetaError> {
@@ -4105,14 +4528,6 @@ impl MetadataStore for SimMetadataStore {
         panic!("SimMeta: get_skill_by_name not implemented — add it plus a conformance case (ADR 0098 D4)")
     }
 
-    async fn get_teleport_target(
-        &self,
-        _id: SessionId,
-    ) -> Result<Option<(HostId, Option<chrono::DateTime<chrono::Utc>>)>, MetaError> {
-        self.gate()?;
-        Ok(self.db.lock().teleport_targets.get(&_id).copied())
-    }
-
     async fn hosts_with_live_capture_jobs(
         &self,
     ) -> Result<std::collections::HashSet<HostId>, MetaError> {
@@ -4515,7 +4930,7 @@ impl MetadataStore for SimMetadataStore {
         sandbox_id: SandboxId,
         expected_current: Option<Option<SandboxId>>,
         allowed_states: &[SessionState],
-    ) -> Result<(), MetaError> {
+    ) -> Result<u64, MetaError> {
         // PG twin (rebind onto a fresh host+sandbox under the same CAS as
         // assign_session_sandbox_guarded, also stamping host_id and — issue
         // #215 — clearing the reconcile strike streak). A guard miss is a
@@ -4556,10 +4971,12 @@ impl MetadataStore for SimMetadataStore {
         r.session.sandbox_id = Some(sandbox_id);
         r.missing_strikes = 0;
         r.updated_at = now;
+        r.binding_epoch += 1;
+        let epoch = r.binding_epoch as u64;
         if let Some((key, value)) = db_tombstone_insert {
             db.sandbox_tombstones.entry(key).or_insert(value);
         }
-        Ok(())
+        Ok(epoch)
     }
 
     async fn record_capture_job_report(
@@ -4838,27 +5255,6 @@ impl MetadataStore for SimMetadataStore {
         _state: EnableJobState,
     ) -> Result<(), MetaError> {
         panic!("SimMeta: set_enable_job_state not implemented — add it plus a conformance case (ADR 0098 D4)")
-    }
-
-    async fn set_teleport_target(
-        &self,
-        id: SessionId,
-        target: Option<HostId>,
-    ) -> Result<(), MetaError> {
-        // PG twin: set/clear the pin + its `_set_at` together (issue #214).
-        // A no-op for an absent session, like the bare UPDATE.
-        self.gate()?;
-        let now = self.now();
-        let mut db = self.db.lock();
-        match target {
-            Some(h) => {
-                db.teleport_targets.insert(id, (h, Some(now)));
-            }
-            None => {
-                db.teleport_targets.remove(&id);
-            }
-        }
-        Ok(())
     }
 
     /// `SELECT count(*), coalesce(sum(size_bytes),0) FROM snapshots` —
@@ -5257,4 +5653,45 @@ fn op_row_to_domain(row: &super::OpRow) -> engram_core::types::session_op::Sessi
         created_at: row.created_at,
         finished_at: row.finished_at,
     }
+}
+
+fn append_event_idempotent_locked(
+    db: &mut super::SimDb,
+    session: SessionId,
+    key: &str,
+    kind: &str,
+    mut payload: serde_json::Value,
+    now: DateTime<Utc>,
+) -> Result<Option<i64>, MetaError> {
+    let row = db.sessions.get_mut(&session).ok_or(MetaError::NotFound)?;
+    let events = db.session_events.entry(session).or_default();
+    if events.iter().any(|event| {
+        event
+            .payload
+            .get("idempotency_key")
+            .and_then(|v| v.as_str())
+            == Some(key)
+    }) {
+        return Ok(None);
+    }
+    payload
+        .as_object_mut()
+        .ok_or_else(|| MetaError::Serialization("event payload must be an object".into()))?
+        .insert(
+            "idempotency_key".into(),
+            serde_json::Value::String(key.into()),
+        );
+    let idx = row.next_event_idx;
+    row.next_event_idx += 1;
+    row.updated_at = now;
+    row.session.last_event_at = Some(now);
+    events.push(PersistedEvent {
+        idx,
+        kind: kind.into(),
+        payload,
+        created_at: now,
+        recovery_epoch: row.recovery_epoch,
+        rewound_at: None,
+    });
+    Ok(Some(idx))
 }

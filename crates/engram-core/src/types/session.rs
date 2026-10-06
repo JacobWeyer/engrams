@@ -84,25 +84,9 @@ pub enum SessionState {
     /// there is nothing to recover. The detector no longer routes
     /// into `Evacuating` (the reactive auto-evac is retired).
     HostLost,
-    /// ADR 0018 commit 12: session is mid-relocation. The source host
-    /// has paused FC, flushed dirty pages, captured a memory snapshot,
-    /// destroyed the local sandbox, and durably committed both memory
-    /// and disk manifests to BlobStorage. The coord-side
-    /// `evac_resumer` background task scans for sessions in this
-    /// state and drives `Evacuating → Created → Active` on a peer
-    /// host via the same `resume_session` machinery `/resume from
-    /// Idle` uses. After 20 failed peer-pick / restore attempts
-    /// (~3 min), falls back to `Idle` so a user `/resume` can drive
-    /// it forward by hand. Reached **only** from `Active` via operator
-    /// drain (`POST /api/admin/sessions/:id/evacuate` or
-    /// `POST /api/admin/hosts/:id/drain`) — ADR 0044 K3. As of ADR
-    /// 0045 Phase A the dead-host detector no longer routes here (the
-    /// reactive auto-evac is retired), and `HostLost → Evacuating` is
-    /// no longer a legal edge. Post-#896 the source binding is
-    /// RETAINED through `Evacuating` (ADR 0090: a destroy
-    /// acknowledgement is not ownership proof) — the evac resumer
-    /// clears it under its claim only after the source teardown is
-    /// positively confirmed.
+    /// ADR 0123: a durable teleport owns this relocation. The source binding
+    /// stays in place until commit atomically installs the destination binding.
+    /// The source remains paused until rollback resumes it or release destroys it.
     Evacuating,
     /// ADR 0034: durable idle-eviction intent marker. The candidates
     /// handler (or the PG detection backstop) transitions
@@ -495,6 +479,14 @@ pub struct QueuedSession {
     pub queued_at: DateTime<Utc>,
 }
 
+/// One open run that `settle_harness_generation` closed, with the index of
+/// the `run_interrupted` event it appended (ADR 0123 C5).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SettledRun {
+    pub run_id: String,
+    pub idx: i64,
+}
+
 /// ADR 0048 C8: an Active session bound to a host, with its reservation
 /// budgets — the drain don't-strand guard needs the budgets to ask
 /// "does some survivor fit this session?".
@@ -627,7 +619,7 @@ pub struct Session {
     /// ADR 0016 Phase B: the host's last-published live disk
     /// manifest from the FlushScheduler. Updated by
     /// `MetadataStore::update_live_disk_manifest`; cleared by
-    /// `assign_session_sandbox(None)`. Coord's
+    /// `fenced_assign_sandbox(None)`. Coord's
     /// `effective_resume_disk_manifest` picks the newer of this
     /// and `snapshots.disk_manifest` so the first resume after
     /// continuous flush is enabled doesn't silently roll back to

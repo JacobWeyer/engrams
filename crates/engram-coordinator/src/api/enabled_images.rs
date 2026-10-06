@@ -1353,7 +1353,7 @@ mod tests {
                 &self,
                 _: engram_core::SessionId,
                 _: engram_core::SandboxId,
-            ) -> Result<(), MetaError> {
+            ) -> Result<u64, MetaError> {
                 unreachable!()
             }
             async fn get_session(
@@ -1387,13 +1387,6 @@ mod tests {
                 &self,
                 _: engram_core::SessionId,
                 _: Option<HostId>,
-            ) -> Result<(), MetaError> {
-                unreachable!()
-            }
-            async fn assign_session_sandbox(
-                &self,
-                _: engram_core::SessionId,
-                _: Option<engram_core::SandboxId>,
             ) -> Result<(), MetaError> {
                 unreachable!()
             }

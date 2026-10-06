@@ -56,13 +56,13 @@ impl MetadataStore for MiniMeta {
         &self,
         session_id: SessionId,
         sandbox_id: engram_core::SandboxId,
-    ) -> Result<(), MetaError> {
+    ) -> Result<u64, MetaError> {
         let mut g = self.sessions.lock();
         let s = g.get_mut(&session_id).ok_or(MetaError::NotFound)?;
         s.status = SessionState::Created;
         s.sandbox_id = Some(sandbox_id);
         s.last_active_at = Utc::now();
-        Ok(())
+        Ok(1)
     }
     async fn reserve_and_persist_create(
         &self,
@@ -104,16 +104,6 @@ impl MetadataStore for MiniMeta {
         let mut g = self.sessions.lock();
         let s = g.get_mut(&id).ok_or(MetaError::NotFound)?;
         s.host_id = host_id;
-        Ok(())
-    }
-    async fn assign_session_sandbox(
-        &self,
-        id: SessionId,
-        sandbox_id: Option<engram_core::SandboxId>,
-    ) -> Result<(), MetaError> {
-        let mut g = self.sessions.lock();
-        let s = g.get_mut(&id).ok_or(MetaError::NotFound)?;
-        s.sandbox_id = sandbox_id;
         Ok(())
     }
     async fn upsert_host(&self, _h: HostRecord) -> Result<(), MetaError> {
@@ -446,4 +436,22 @@ async fn arc_dyn_metadata_store_dispatches_correctly() {
     let meta: Arc<dyn MetadataStore> = Arc::new(MiniMeta::default());
     let result = meta.mark_host_dead_if_lease_expired(HostId::new()).await;
     assert!(result.is_ok());
+}
+
+use engram_coordinator as coordinator;
+#[path = "support/teleport.rs"]
+pub mod teleport_support;
+
+#[tokio::test]
+async fn skips_sessions_with_open_teleport_as_source() {
+    let rig = teleport_support::Rig::sim().await;
+    let meta = &rig.state.services.meta;
+    assert!(meta
+        .mark_host_dead_if_lease_expired(rig.row.source_host_id)
+        .await
+        .unwrap()
+        .is_empty());
+    let session = meta.get_session(rig.row.session_id).await.unwrap();
+    assert_eq!(session.status, SessionState::Evacuating);
+    assert_eq!(session.sandbox_id, Some(rig.source.sandbox));
 }

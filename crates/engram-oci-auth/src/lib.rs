@@ -204,7 +204,7 @@ mod tests {
     use engram_core::types::{
         HostRecord, PersistedEvent, Session, SessionSpec, SessionState, SnapshotRecord,
     };
-    use engram_core::{HostId, MetaError, SandboxId, SessionId};
+    use engram_core::{HostId, MetaError, SessionId};
 
     /// MetadataStore stub that holds at most one registry credential.
     /// All other methods unreachable / empty — we never call them in
@@ -232,7 +232,7 @@ mod tests {
             &self,
             _: SessionId,
             _: engram_core::SandboxId,
-        ) -> Result<(), MetaError> {
+        ) -> Result<u64, MetaError> {
             unreachable!()
         }
         async fn reserve_and_persist_create(
@@ -261,13 +261,6 @@ mod tests {
             &self,
             _: SessionId,
             _: Option<HostId>,
-        ) -> Result<(), MetaError> {
-            Ok(())
-        }
-        async fn assign_session_sandbox(
-            &self,
-            _: SessionId,
-            _: Option<SandboxId>,
         ) -> Result<(), MetaError> {
             Ok(())
         }

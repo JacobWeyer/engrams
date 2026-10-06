@@ -22,8 +22,6 @@ pub mod cow_state;
 pub mod dead_host;
 pub mod enable_scanner;
 pub mod error;
-pub mod evac_resumer;
-pub mod evacuation;
 pub mod grpc_app;
 pub mod harness_catalog;
 pub mod harness_desync;
@@ -33,7 +31,6 @@ pub mod idle_detector;
 pub mod idle_evictor;
 pub mod integration_ops;
 pub mod integrations;
-pub mod live_migration;
 pub mod metrics;
 pub mod oauth;
 pub mod oauth_redirect;
@@ -55,6 +52,7 @@ pub mod snapshot_blob_gc;
 mod span_parenting_tests;
 pub mod squashfs;
 pub mod state;
+pub mod teleport;
 
 pub use config::CoordinatorConfig;
 pub use error::ApiError;
@@ -208,14 +206,7 @@ pub async fn run_with_registry_and_local(
     // simulator. An expired binding lease (ADR 0116 A-D4) triggers
     // eviction within ~host_lease_ttl + poll_interval.
     let _dead_host = dead_host::spawn(dead_host::DeadHostConfig::default(), state.clone());
-    // ADR 0018 commit 12c: the evac-resumer scanner picks up sessions
-    // marked Evacuating (by the admin /drain, /evacuate, or
-    // dead_host.rs) and drives Evacuating → Created → Active on a
-    // peer host via the shared resume primitives. Without it,
-    // sessions transitioned to Evacuating just sit there. Doesn't
-    // require its own PgPool — it goes through MetadataStore.
-    let _evac_resumer =
-        evac_resumer::spawn(evac_resumer::EvacResumerConfig::default(), state.clone());
+    let _teleport = teleport::spawn(teleport::TeleportConfig::default(), state.clone());
 
     // ADR 0048: the session queue scanner. Drives `queued` sessions to
     // placement (best-fit, per-fit-class FIFO) as capacity frees / the
@@ -293,12 +284,6 @@ pub async fn run_with_registry_and_local(
     // the L3 backstop are unified here — see idle_detector.rs).
     let _idle_detector =
         idle_detector::spawn(idle_detector::IdleDetectorConfig::from_env(), state.clone());
-
-    // Track A: harness-desync watchdog. Catches the wedge class the
-    // silence-only backstop misses — a harness whose event stream desynced
-    // from the run state machine (a run-scoped event with no open run, or a
-    // stuck-open run) — and recovers it with a non-destructive harness
-    // re-handshake, escalating to the eviction lane if the nudges don't take.
 
     // ADR 0009 §1-§3: in-process reconcile driver. In `--mode=all`
     // (single-process coord+host) and `--mode=host` test fixtures

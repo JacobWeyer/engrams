@@ -296,7 +296,7 @@ mod tests {
             &self,
             _: engram_core::SessionId,
             _: engram_core::SandboxId,
-        ) -> Result<(), MetaError> {
+        ) -> Result<u64, MetaError> {
             unimplemented!()
         }
         async fn reserve_and_persist_create(
@@ -319,13 +319,6 @@ mod tests {
             &self,
             _: engram_core::SessionId,
             _: Option<HostId>,
-        ) -> Result<(), MetaError> {
-            unimplemented!()
-        }
-        async fn assign_session_sandbox(
-            &self,
-            _: engram_core::SessionId,
-            _: Option<engram_core::SandboxId>,
         ) -> Result<(), MetaError> {
             unimplemented!()
         }

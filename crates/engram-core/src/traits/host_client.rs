@@ -172,6 +172,17 @@ pub trait HostClient: Send + Sync {
         ))
     }
 
+    /// Capture a portable snapshot and keep the source paused until resume or destroy.
+    async fn snapshot_hold(
+        &self,
+        _id: SandboxId,
+        _fence: SessionFence,
+    ) -> Result<SnapshotMetadata, SandboxError> {
+        Err(SandboxError::InvalidSpec(
+            "snapshot hold is unsupported".into(),
+        ))
+    }
+
     async fn snapshot(
         &self,
         id: SandboxId,
@@ -412,10 +423,14 @@ pub trait HostClient: Send + Sync {
     /// token as a durable binding record and validates every attach
     /// against it. The write is monotonic in the epoch — a stale
     /// caller's bind is refused host-side, so races converge to the
-    /// newest generation. Remote impls swallow transport failures into
-    /// a warning log (the record also rides the spawn path; the next
-    /// delivery attempt re-binds).
-    async fn bind_session(&self, session_id: SessionId, sandbox_id: SandboxId, binding_epoch: u64);
+    /// newest generation. Transport and persistence errors propagate;
+    /// the coordinator must not spawn after a failed bind.
+    async fn bind_session(
+        &self,
+        session_id: SessionId,
+        sandbox_id: SandboxId,
+        binding_epoch: u64,
+    ) -> Result<(), SandboxError>;
 
     /// Drop the session→sandbox binding.
     async fn unbind_session(&self, session_id: SessionId);

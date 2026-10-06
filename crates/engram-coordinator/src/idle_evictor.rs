@@ -390,8 +390,8 @@ async fn quarantine_reap_unevictable(
                 .fenced_assign_sandbox(session_id, ctx.epoch, None, session.host_id)
                 .await
             {
-                Ok(true) => {}
-                Ok(false) => {
+                Ok(_) => {}
+                Err(engram_core::MetaError::Conflict(_)) => {
                     crate::metrics::note_fenced_write();
                     tracing::warn!(
                         session_id = %session_id,
@@ -424,13 +424,7 @@ async fn quarantine_reap_unevictable(
 /// `session_ops_one_running` index replaces the session lease) with
 /// durable step markers (`park_or_capture → mark_idle`).
 ///
-/// `target_state = Idle` is the user-paused (manual /resume) shape;
-/// `Evacuating` is the operator-drain shape where the `evac_resumer`
-/// scanner drives `Evacuating → Created → Active` on a peer host — the
-/// non-target-state code paths are IDENTICAL, so both flows share the
-/// recoverability invariants (snapshot durable before destroy, PG flips
-/// before the best-effort destroy so reconcile can't race the orphan
-/// path).
+/// This pipeline evicts to Idle. Teleport owns relocation capture and release.
 ///
 /// `nominated = true` (idle-detector / scanner / rung-descent ops)
 /// tightens the entry guard to `status == Evicting`: a rung-1/2 ascent
@@ -447,14 +441,11 @@ pub(crate) async fn run_evict_pipeline(
 ) -> Result<EvictOutcome, EvictError> {
     let state = ctx.state;
     let session_id = ctx.op.session_id;
-    // The pipeline only knows about Idle and Evacuating as legal
-    // targets. Both share the "Active → captured-snapshot → suspended"
-    // semantic; any other target would skip half the steps and break
-    // the recovery invariants. Reject early with a clean error.
-    if !matches!(target_state, SessionState::Idle | SessionState::Evacuating) {
+    // Only eviction to Idle belongs to this pipeline.
+    if target_state != SessionState::Idle {
         return Err(EvictError::Meta(format!(
             "run_evict_pipeline: target {target_state:?} not supported \
-             (only Idle and Evacuating)",
+             (only Idle)",
         )));
     }
 
@@ -1046,14 +1037,6 @@ pub(crate) async fn run_evict_pipeline(
     // heartbeat for this session because the reconcile pass keys
     // on Active status only.
     //
-    // Evacuating deliberately RETAINS the source binding. A successful
-    // destroy RPC is not sufficient ownership proof: the host may have
-    // durably accepted the verb while its teardown effect is still pending.
-    // The evac resumer re-destroys, probes the source, and clears this
-    // binding under its claim only after the sandbox is confirmed gone.
-    // Until then ADR 0090's coordinator truth continues to own the outgoing
-    // VM, so no replacement can be restored alongside it.
-    //
     // The transition's own facts (`snapshot_taken`, `evicted`, the final
     // `status_changed`) ride the SAME store transaction: the flip makes
     // the session immediately claimable, so post-commit `emit_fenced`
@@ -1067,13 +1050,7 @@ pub(crate) async fn run_evict_pipeline(
         session_id,
         ctx.fence(),
         target_state,
-        // Post-#896: the Idle path detaches in the fused flip; Evacuating
-        // RETAINS the source binding until teardown is confirmed.
-        if target_state == SessionState::Idle {
-            BindingDisposition::Detach
-        } else {
-            BindingDisposition::Retain
-        },
+        BindingDisposition::Detach,
         vec![
             crate::state::SessionEvent::SnapshotTaken {
                 snapshot_id: metadata.id,
@@ -1355,7 +1332,7 @@ impl Default for EvictionScannerConfig {
 
 /// Spawn the eviction scanner as a background task. Caller holds the
 /// JoinHandle for the process lifetime; dropping aborts the loop.
-/// Mirrors [`crate::evac_resumer::spawn`].
+/// Mirrors [`crate::teleport::spawn`].
 ///
 /// The first sweep after coord startup is part of the deploy-recovery
 /// story: a row left `Evicting` with no op (see the module doc) gets a
@@ -1975,7 +1952,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
         assert_eq!(
@@ -1988,7 +1965,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, None)
+            .fenced_assign_sandbox(session_id, 0, None, None)
             .await
             .unwrap();
         assert_eq!(state.resolve_sandbox(session_id).await, None);
@@ -2183,7 +2160,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
 
@@ -2313,7 +2290,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
 
@@ -2470,7 +2447,7 @@ mod tests {
                 session_id: engram_core::SessionId,
                 sandbox_id: engram_core::SandboxId,
                 binding_epoch: u64,
-            ) {
+            ) -> Result<(), engram_core::SandboxError> {
                 self.inner
                     .bind_session(session_id, sandbox_id, binding_epoch)
                     .await
@@ -2574,7 +2551,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
 
@@ -2699,7 +2676,7 @@ mod tests {
                 session_id: engram_core::SessionId,
                 sandbox_id: engram_core::SandboxId,
                 binding_epoch: u64,
-            ) {
+            ) -> Result<(), engram_core::SandboxError> {
                 self.inner
                     .bind_session(session_id, sandbox_id, binding_epoch)
                     .await
@@ -2799,7 +2776,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
 
@@ -2921,7 +2898,7 @@ mod tests {
                 session_id: engram_core::SessionId,
                 sandbox_id: engram_core::SandboxId,
                 binding_epoch: u64,
-            ) {
+            ) -> Result<(), engram_core::SandboxError> {
                 self.inner
                     .bind_session(session_id, sandbox_id, binding_epoch)
                     .await
@@ -3019,7 +2996,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
 
@@ -3084,7 +3061,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
 
@@ -3247,7 +3224,7 @@ mod tests {
                 session_id: engram_core::SessionId,
                 sandbox_id: engram_core::SandboxId,
                 binding_epoch: u64,
-            ) {
+            ) -> Result<(), engram_core::SandboxError> {
                 self.inner
                     .bind_session(session_id, sandbox_id, binding_epoch)
                     .await
@@ -3350,7 +3327,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
 
@@ -3448,7 +3425,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
 
@@ -3492,7 +3469,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
 
@@ -3542,7 +3519,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
         *mini.fail_next_record_snapshot.lock() = true;
@@ -3697,7 +3674,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
 
@@ -3757,7 +3734,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
 
@@ -3810,7 +3787,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
         let host_id = state
@@ -3882,7 +3859,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
         let host_id = state
@@ -3944,7 +3921,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
         let host_id = state
@@ -3998,7 +3975,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
         let host_id = state
@@ -4074,7 +4051,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
         let host_id = state
@@ -4160,7 +4137,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
         let host_id = state
@@ -4181,11 +4158,11 @@ mod tests {
             .await
             .expect("drain");
         assert_eq!(
-            resp.evacuating,
+            resp.descended,
             vec![session_id],
             "the parked session is drain work, not an empty success"
         );
-        assert!(resp.failures.is_empty(), "failures: {:?}", resp.failures);
+        assert_eq!(resp.skipped, 0);
 
         {
             let m = meta.clone();
@@ -4227,7 +4204,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
         let host_id = state.host_registry.host_of(sandbox_id).expect("routed");
@@ -4372,7 +4349,7 @@ mod tests {
                 session_id: engram_core::SessionId,
                 sandbox_id: engram_core::SandboxId,
                 binding_epoch: u64,
-            ) {
+            ) -> Result<(), engram_core::SandboxError> {
                 self.inner
                     .bind_session(session_id, sandbox_id, binding_epoch)
                     .await
@@ -4466,7 +4443,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
 
@@ -4639,7 +4616,7 @@ mod tests {
                 session_id: engram_core::SessionId,
                 sandbox_id: engram_core::SandboxId,
                 binding_epoch: u64,
-            ) {
+            ) -> Result<(), engram_core::SandboxError> {
                 self.inner
                     .bind_session(session_id, sandbox_id, binding_epoch)
                     .await
@@ -4720,7 +4697,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
         {
@@ -4914,7 +4891,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
 
@@ -4972,7 +4949,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
 
@@ -5025,7 +5002,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
 
@@ -5077,7 +5054,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
 
@@ -5150,7 +5127,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
 
@@ -5250,7 +5227,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
 
@@ -5316,7 +5293,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(session_id, Some(sandbox_id))
+            .fenced_assign_sandbox(session_id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
 

@@ -1,4 +1,9 @@
 use crate::types::host::DeleteHostOutcome;
+use crate::types::ids::TeleportId;
+use crate::types::teleport::{
+    SourceRelease, TeleportAdmitOutcome, TeleportAdmitRequest, TeleportPatch, TeleportPhase,
+    TeleportRow, TeleportSettle,
+};
 use async_trait::async_trait;
 
 use crate::error::MetaError;
@@ -158,6 +163,70 @@ impl ExecOutputStream {
 /// we can support SQLite for embedded deployments later.
 #[async_trait]
 pub trait MetadataStore: Send + Sync {
+    /// Current binding generation and highest attached generation.
+    async fn session_binding_generations(&self, _id: SessionId) -> Result<(u64, u64), MetaError> {
+        unimplemented!("session_binding_generations")
+    }
+
+    /// Admit a move and reserve its destination in one transaction.
+    async fn teleport_admit(
+        &self,
+        _req: TeleportAdmitRequest,
+    ) -> Result<TeleportAdmitOutcome, MetaError> {
+        unimplemented!("teleport_admit")
+    }
+    /// Compare the phase and session fence before applying the patch.
+    async fn teleport_advance(
+        &self,
+        _id: TeleportId,
+        _from: TeleportPhase,
+        _to: TeleportPhase,
+        _patch: TeleportPatch,
+        _epoch: i64,
+    ) -> Result<bool, MetaError> {
+        unimplemented!("teleport_advance")
+    }
+    /// Move the binding and phase together; mint one binding generation.
+    async fn teleport_commit(
+        &self,
+        _id: TeleportId,
+        _epoch: i64,
+    ) -> Result<Option<u64>, MetaError> {
+        unimplemented!("teleport_commit")
+    }
+    /// Finish only after source teardown has been confirmed.
+    async fn teleport_release_source(
+        &self,
+        _id: TeleportId,
+        _epoch: i64,
+        _how: SourceRelease,
+    ) -> Result<bool, MetaError> {
+        unimplemented!("teleport_release_source")
+    }
+    /// Mark an open row `failed` and settle the session in one fenced
+    /// transaction (see [`TeleportSettle`]). `false` when the row is already
+    /// terminal or the epoch moved; `Conflict` on an illegal session edge.
+    async fn teleport_settle(
+        &self,
+        _id: TeleportId,
+        _epoch: i64,
+        _settle: TeleportSettle,
+    ) -> Result<bool, MetaError> {
+        unimplemented!("teleport_settle")
+    }
+    async fn teleport_abort(&self, _id: TeleportId, _epoch: i64) -> Result<bool, MetaError> {
+        unimplemented!("teleport_abort")
+    }
+    async fn list_open_teleports(&self) -> Result<Vec<TeleportRow>, MetaError> {
+        unimplemented!("list_open_teleports")
+    }
+    async fn open_teleport_for_session(
+        &self,
+        _sid: SessionId,
+    ) -> Result<Option<TeleportRow>, MetaError> {
+        unimplemented!("open_teleport_for_session")
+    }
+
     // ---- liveness ----
     //
     // Cheap connectivity check for readiness probes. Default is
@@ -215,7 +284,7 @@ pub trait MetadataStore: Send + Sync {
         &self,
         session_id: SessionId,
         sandbox_id: SandboxId,
-    ) -> Result<(), MetaError>;
+    ) -> Result<u64, MetaError>;
 
     async fn get_session(&self, id: SessionId) -> Result<Session, MetaError>;
 
@@ -381,33 +450,6 @@ pub trait MetadataStore: Send + Sync {
     /// Default: zeros.
     async fn queued_demand(&self) -> Result<QueuedDemand, MetaError> {
         Ok(QueuedDemand::default())
-    }
-
-    /// ADR 0047 (was `state.teleport_targets`): pin / clear the
-    /// operator-chosen teleport destination on the session row. The
-    /// evac scanner — on ANY replica — honors the pin as its required
-    /// placement. Setting a pin stamps `teleport_target_set_at = NOW()`
-    /// (issue #214) so the scanner can age out a stale leaked pin;
-    /// clearing (`None`) clears the stamp too. Default impls (mocks):
-    /// no-op / no pin.
-    async fn set_teleport_target(
-        &self,
-        _id: SessionId,
-        _target: Option<HostId>,
-    ) -> Result<(), MetaError> {
-        Ok(())
-    }
-    /// Read the operator-pinned teleport destination and the instant it
-    /// was set, if any. Issue #214: the `set_at` lets the evac scanner
-    /// ignore + clear a pin older than a TTL — degrading any future pin
-    /// leak to default placement instead of a strict hijack. A `None`
-    /// timestamp (pin set before the 0065 migration) is treated as
-    /// not-aged by the scanner. Default impls (mocks): no pin.
-    async fn get_teleport_target(
-        &self,
-        _id: SessionId,
-    ) -> Result<Option<(HostId, Option<chrono::DateTime<chrono::Utc>>)>, MetaError> {
-        Ok(None)
     }
 
     /// ADR 0047 (was `state.git_broker_tokens`): the KEK-sealed
@@ -855,51 +897,12 @@ pub trait MetadataStore: Send + Sync {
         Ok(Some((prev, target)))
     }
 
+    /// Retained because dead_host.rs still uses it to clear host ownership.
     async fn assign_session_host(
         &self,
         id: SessionId,
         host_id: Option<HostId>,
     ) -> Result<(), MetaError>;
-
-    /// Persist the in-memory `SandboxId` of the live sandbox serving
-    /// this session. Set to `Some` after `host_registry.create_for_session`
-    /// returns, cleared to `None` on evict/migrate. The coordinator
-    /// uses these rows to rebuild its in-memory routing maps after
-    /// a restart.
-    async fn assign_session_sandbox(
-        &self,
-        id: SessionId,
-        sandbox_id: Option<SandboxId>,
-    ) -> Result<(), MetaError>;
-
-    /// ADR 0073: mint the next binding epoch for `id` — one atomic
-    /// `UPDATE … SET binding_epoch = binding_epoch + 1 … RETURNING`.
-    /// Called by the coordinator at the moment it commits to binding
-    /// the session to a NEW sandbox for a fresh-spawn flow (create,
-    /// idle resume, cold recovery, evac). Live moves do NOT mint — the
-    /// harness process survives a teleport and its generation is
-    /// unchanged (see `current_binding_epoch`).
-    ///
-    /// Default (mock stores): a constant `1` — mocks get "no fencing",
-    /// which is the pre-0067 behavior; the Postgres store overrides
-    /// with the real per-session counter. Same degradation pattern as
-    /// the guarded-CAS defaults above.
-    async fn mint_binding_epoch(&self, id: SessionId) -> Result<u64, MetaError> {
-        let _ = id;
-        Ok(1)
-    }
-
-    /// ADR 0073: the session's current binding epoch, without minting.
-    /// Read by flows where the harness process may SURVIVE the
-    /// transition (live migration; in-place reattach on the same
-    /// sandbox) so the spec they build matches the standing record.
-    ///
-    /// Default (mock stores): constant `1`, paired with
-    /// [`Self::mint_binding_epoch`]'s default.
-    async fn current_binding_epoch(&self, id: SessionId) -> Result<u64, MetaError> {
-        let _ = id;
-        Ok(1)
-    }
 
     /// ADR 0073 phase 4: one row per Active+bound session for the idle
     /// scan — newest event (kind + time), host, and the shell pin. The
@@ -1313,6 +1316,9 @@ pub trait MetadataStore: Send + Sync {
         ))
     }
 
+    /// A set returns the new binding epoch; a clear returns None.
+    /// A stale fence returns Conflict. Both writes reset missing-sandbox strikes;
+    /// a clear also removes the live manifest and bumps chunk_generation.
     /// Fenced sandbox (re)bind — subsumes `rebind_session_guarded`'s
     /// bespoke expected-state list with the one epoch predicate.
     async fn fenced_assign_sandbox(
@@ -1321,7 +1327,7 @@ pub trait MetadataStore: Send + Sync {
         epoch: i64,
         sandbox_id: Option<SandboxId>,
         host_id: Option<crate::types::HostId>,
-    ) -> Result<bool, MetaError> {
+    ) -> Result<Option<u64>, MetaError> {
         let _ = (session_id, epoch, sandbox_id, host_id);
         Err(MetaError::Serialization(
             "fenced writes not supported by this store".into(),
@@ -1498,31 +1504,19 @@ pub trait MetadataStore: Send + Sync {
         Ok(false)
     }
 
-    /// ADR 0045 C2: the `Committing` persist — rebind a session's host
-    /// AND sandbox in one step. The ownership oracle
-    /// (`sandbox_ownership`: `session.sandbox_id == sandbox`) must flip
-    /// atomically with the rebind, which is the entire semantic content
-    /// of post-copy ownership transfer. The default is the sequential
-    /// two-step (mock/test stores); the Postgres store overrides with a
-    /// single UPDATE.
+    /// Bind host and sandbox in one guarded write and return the new epoch.
+    /// This is the unguarded entry point for fixture callers.
     async fn rebind_session(
         &self,
         id: SessionId,
         host_id: HostId,
         sandbox_id: SandboxId,
-    ) -> Result<(), MetaError> {
-        self.assign_session_host(id, Some(host_id)).await?;
-        self.assign_session_sandbox(id, Some(sandbox_id)).await
+    ) -> Result<u64, MetaError> {
+        self.rebind_session_guarded(id, host_id, sandbox_id, None, &[])
+            .await
     }
 
-    /// Issue #211: guarded compare-and-swap variant of
-    /// [`Self::assign_session_sandbox`]. The three binding writers
-    /// (`assign_session_{host,sandbox}`, `rebind_session`) are otherwise
-    /// blind `WHERE id = $1` UPDATEs: a racing actor can bind a live
-    /// sandbox onto a row that has *concurrently* gone terminal (the
-    /// terminate-races-resume interleaving), defeating the orphan reap —
-    /// the ownership oracle matches `sandbox_id` only and never re-checks
-    /// status, so a live VM pinned to a `Completed` row leaks forever.
+    /// Compare-and-swap sandbox binding write.
     ///
     /// This method conditions the write on:
     ///   * `expected_current` — `Some(prev)` requires the row's current
@@ -1537,33 +1531,16 @@ pub trait MetadataStore: Send + Sync {
     /// row with this id exists at all. Callers that just created a sandbox
     /// MUST destroy it on `Conflict` rather than leaking it.
     ///
-    /// The default impl composes a `get_session` legality check with the
-    /// blind setter — atomic enough for single-threaded mock stores; the
-    /// Postgres store overrides it with a true single-statement CAS.
     async fn assign_session_sandbox_guarded(
         &self,
-        id: SessionId,
-        sandbox_id: Option<SandboxId>,
-        expected_current: Option<Option<SandboxId>>,
-        allowed_states: &[SessionState],
-    ) -> Result<(), MetaError> {
-        let session = self.get_session(id).await?;
-        if let Some(expected) = expected_current {
-            if session.sandbox_id != expected {
-                return Err(MetaError::Conflict(format!(
-                    "assign_session_sandbox guard: sandbox_id is {:?}, expected {:?}",
-                    session.sandbox_id, expected
-                )));
-            }
-        }
-        if !allowed_states.is_empty() && !allowed_states.contains(&session.status) {
-            return Err(MetaError::Conflict(format!(
-                "assign_session_sandbox guard: status is {}, not in {:?}",
-                session.status.as_str(),
-                allowed_states
-            )));
-        }
-        self.assign_session_sandbox(id, sandbox_id).await
+        _id: SessionId,
+        _sandbox_id: Option<SandboxId>,
+        _expected_current: Option<Option<SandboxId>>,
+        _allowed_states: &[SessionState],
+    ) -> Result<Option<u64>, MetaError> {
+        unimplemented!(
+            "assign_session_sandbox_guarded: PostgresStore and SimMetadataStore implement it"
+        )
     }
 
     /// Issue #211: guarded CAS variant of [`Self::assign_session_host`].
@@ -1605,29 +1582,13 @@ pub trait MetadataStore: Send + Sync {
     /// landing on a row that went terminal mid-migration.
     async fn rebind_session_guarded(
         &self,
-        id: SessionId,
-        host_id: HostId,
-        sandbox_id: SandboxId,
-        expected_current: Option<Option<SandboxId>>,
-        allowed_states: &[SessionState],
-    ) -> Result<(), MetaError> {
-        let session = self.get_session(id).await?;
-        if let Some(expected) = expected_current {
-            if session.sandbox_id != expected {
-                return Err(MetaError::Conflict(format!(
-                    "rebind_session guard: sandbox_id is {:?}, expected {:?}",
-                    session.sandbox_id, expected
-                )));
-            }
-        }
-        if !allowed_states.is_empty() && !allowed_states.contains(&session.status) {
-            return Err(MetaError::Conflict(format!(
-                "rebind_session guard: status is {}, not in {:?}",
-                session.status.as_str(),
-                allowed_states
-            )));
-        }
-        self.rebind_session(id, host_id, sandbox_id).await
+        _id: SessionId,
+        _host_id: HostId,
+        _sandbox_id: SandboxId,
+        _expected_current: Option<Option<SandboxId>>,
+        _allowed_states: &[SessionState],
+    ) -> Result<u64, MetaError> {
+        unimplemented!("rebind_session_guarded: PostgresStore and SimMetadataStore implement it")
     }
 
     /// ADR 0015 M3: PG-authoritative lookup for "which host owns this
@@ -2249,6 +2210,39 @@ pub trait MetadataStore: Send + Sync {
         _stream: ExecOutputStream,
     ) -> Result<u64, MetaError> {
         Ok(0)
+    }
+
+    /// ADR 0123 C5: advance `attached_binding_epoch` to `epoch` and, if it
+    /// moved, close every open run of an older generation with
+    /// `run_interrupted { cause: harness_replaced }`, once per run. The runs
+    /// in `continued` are the ones the advancing event itself references
+    /// (a re-attached harness that keeps running them); they are never
+    /// settled. Returns the runs it closed with the appended event index.
+    async fn settle_harness_generation(
+        &self,
+        session: SessionId,
+        epoch: u64,
+        continued: &[String],
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<crate::types::session::SettledRun>, MetaError> {
+        let _ = (session, epoch, continued, now);
+        Err(MetaError::Serialization(
+            "harness settlement is not implemented".into(),
+        ))
+    }
+
+    /// Append once per session and key. A replay returns no index.
+    async fn append_session_event_idempotent(
+        &self,
+        session: SessionId,
+        key: &str,
+        kind: &str,
+        payload: serde_json::Value,
+    ) -> Result<Option<i64>, MetaError> {
+        let _ = (session, key, kind, payload);
+        Err(MetaError::Serialization(
+            "idempotent event append is not implemented".into(),
+        ))
     }
 
     /// Append an event to a session's persistent log. Returns the
@@ -3709,26 +3703,6 @@ pub trait MetadataStore: Send + Sync {
         Ok(())
     }
 
-    // ----------------------------------------------------------------
-    // ADR 0018 commit 12b — evac_resumer scanner support.
-    //
-    // The scanner polls `Evacuating` sessions, picks a peer host,
-    // and drives `Evacuating → Created → Active`. The retry counter
-    // is a side-car on the `sessions` row (column `evac_attempts`,
-    // migration 0037). The PG-backed `transition_session(Evacuating)`
-    // resets the counter to 0 in the same UPDATE so re-entry from a
-    // fresh drain starts fresh; bumps happen via `bump_evac_attempts`
-    // (atomic UPDATE ... RETURNING).
-    // ----------------------------------------------------------------
-
-    /// Sessions currently in `Evacuating`, paired with their current
-    /// `evac_attempts` count. The scanner uses this on every tick.
-    /// Default `Ok(vec![])` keeps in-memory mocks quiet; PG impl
-    /// runs an indexed `WHERE status = 'evacuating'` query.
-    async fn list_evacuating_sessions(&self) -> Result<Vec<(Session, u32)>, MetaError> {
-        Ok(Vec::new())
-    }
-
     /// Input to the dead-host driver's straggler sweep: `HostLost` rows
     /// whose inline stage-2 transition never ran or failed. These arise
     /// when eviction exhausts its retry budget or a coordinator replica
@@ -3737,15 +3711,6 @@ pub trait MetadataStore: Send + Sync {
     /// listing explicitly.
     async fn list_host_lost_sessions(&self) -> Result<Vec<Session>, MetaError> {
         Ok(Vec::new())
-    }
-
-    /// Atomically `evac_attempts = evac_attempts + 1 RETURNING
-    /// evac_attempts`. Scanner calls this before each resume attempt;
-    /// when the returned count exceeds the budget, scanner gives up
-    /// and falls back to Idle. Default returns 1 so test mocks can
-    /// observe the bump without persisting state.
-    async fn bump_evac_attempts(&self, _session_id: SessionId) -> Result<u32, MetaError> {
-        Ok(1)
     }
 
     // ----------------------------------------------------------------

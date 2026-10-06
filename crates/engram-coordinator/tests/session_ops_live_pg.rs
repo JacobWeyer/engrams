@@ -87,18 +87,15 @@ async fn enqueue_and_claim_is_one_round_trip_when_idle() {
 
     // `sessions.current_epoch` really moved: a fenced write with the
     // claimed epoch lands, one with any other epoch is 0-row.
-    assert!(
-        !meta
-            .fenced_assign_sandbox(sid, 99, None, None)
-            .await
-            .expect("fenced write, wrong epoch"),
-        "stale epoch must fence",
-    );
-    assert!(
+    assert!(matches!(
+        meta.fenced_assign_sandbox(sid, 99, None, None).await,
+        Err(engram_core::MetaError::Conflict(_))
+    ));
+    assert_eq!(
         meta.fenced_assign_sandbox(sid, 1, None, None)
             .await
-            .expect("fenced write, claimed epoch"),
-        "current_epoch must be 1 after the claim",
+            .unwrap(),
+        None
     );
 }
 
@@ -1009,5 +1006,34 @@ async fn wake_queued_kind_pulls_not_before_to_now() {
             .unwrap(),
         0,
         "no queued deliver left to wake",
+    );
+}
+
+use engram_coordinator as coordinator;
+#[path = "support/teleport.rs"]
+pub mod teleport_support;
+
+#[tokio::test]
+#[ignore = "requires live Postgres at ENGRAM_TEST_DATABASE_URL"]
+async fn teleport_op_resumes_from_row_after_a_long_executor_gap() {
+    let Some(db) = engram_testkit::pg::fresh_db().await else {
+        return;
+    };
+    let clock = engram_sim::ManualClock::new();
+    let meta = std::sync::Arc::new(db.store.with_clock(clock.clone()));
+    let mut rig = teleport_support::Rig::new(meta, clock).await;
+    // The no-deadline contract is pinned by session_ops::deadline_tests.
+    rig.clock.advance(std::time::Duration::from_secs(3600));
+    rig.reclaim().await;
+    assert!(matches!(
+        rig.drive().await,
+        coordinator::session_ops::OpOutcome::Done
+    ));
+    assert_eq!(rig.phase().await, None);
+    assert_eq!(
+        rig.source
+            .captures
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
     );
 }

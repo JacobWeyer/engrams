@@ -921,6 +921,15 @@ impl HostClient for SimHostClient {
         ))
     }
 
+    async fn snapshot_hold(
+        &self,
+        id: SandboxId,
+        fence: SessionFence,
+    ) -> Result<SnapshotMetadata, SandboxError> {
+        self.pause(id, fence).await?;
+        self.snapshot(id, fence).await
+    }
+
     async fn snapshot(
         &self,
         id: SandboxId,
@@ -1083,9 +1092,10 @@ impl HostClient for SimHostClient {
         session_id: SessionId,
         sandbox_id: SandboxId,
         _binding_epoch: u64,
-    ) {
+    ) -> Result<(), engram_core::SandboxError> {
         self.maybe_hang().await;
-        if self.world.require_up(self.host_id).is_ok() {
+        self.world.require_up(self.host_id)?;
+        {
             self.world.record_effect(
                 self.host_id,
                 Effect::Bind {
@@ -1094,6 +1104,7 @@ impl HostClient for SimHostClient {
                 },
             );
         }
+        Ok(())
     }
 
     async fn unbind_session(&self, session_id: SessionId) {

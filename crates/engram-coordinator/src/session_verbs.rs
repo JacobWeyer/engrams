@@ -27,16 +27,13 @@ pub async fn dispatch(ctx: &OpCtx<'_>) -> OpOutcome {
         // in follow-up phases), so terminally fail the row — this FREES
         // the session's op lane (fence-then-free, the successor to the
         // retired lease reaper) and the existing recovery machinery owns
-        // the rest (periodic checkpoints for a torn manual snapshot; the
-        // ADR 0018 parachute / evac scanner for a torn teleport).
+        // the rest (periodic checkpoints for a torn manual snapshot). A
+        // Teleport op is re-drivable: `teleport::drive` resumes from the
+        // `session_teleports` row (ADR 0123 B).
         OpKind::CheckpointFinalize => OpOutcome::Failed(
             "manual snapshot claim abandoned (holder died); safe to retry the snapshot".into(),
         ),
-        OpKind::Teleport => OpOutcome::Failed(
-            "teleport claim abandoned (holder died); the parachute/evac machinery owns \
-             recovery — safe to re-issue the move"
-                .into(),
-        ),
+        OpKind::Teleport => crate::teleport::drive(ctx).await,
     }
 }
 
@@ -146,7 +143,7 @@ fn derive_resume_plan(
 ///
 /// `require_confirm` selects the teardown posture: the deterministic
 /// spawn re-plan runs against a LIVE host, so the unbind is gated on
-/// `confirm_source_teardown` (host-affirmed release — never strand a
+/// `destroy_retained_sandbox` (host-affirmed release — never strand a
 /// running VM's plane behind a cleared row); the Unreachable arm's
 /// guest is already dead, so its destroy stays best-effort and the
 /// tombstone alone owns cleanup.
@@ -171,7 +168,7 @@ async fn rebuild_binding(
                 return OpOutcome::Retry("rebuild: tombstone write failed".into());
             }
             if require_confirm {
-                if let Err(e) = crate::evac_resumer::confirm_source_teardown(
+                if let Err(e) = crate::api::snapshot::destroy_retained_sandbox(
                     state,
                     host_id,
                     sandbox_id,
@@ -461,11 +458,38 @@ async fn resume_inner(ctx: &OpCtx<'_>) -> OpOutcome {
             if !ctx.step("finish").await {
                 return OpOutcome::Failed("fenced at finish".into());
             }
+            let prepared = async {
+                let host_id = session.host_id.ok_or_else(|| {
+                    crate::error::ApiError::Conflict("session has no host".into())
+                })?;
+                let epoch = state
+                    .services
+                    .meta
+                    .rebind_session_guarded(
+                        session.id,
+                        host_id,
+                        sandbox_id,
+                        Some(Some(sandbox_id)),
+                        &[session.status],
+                    )
+                    .await?;
+                crate::api::snapshot::bind_harness_generation(state, session.id, sandbox_id, epoch)
+                    .await?;
+                crate::boot_materializer::materialize_snapshot_resume(
+                    state, &session, sandbox_id, epoch,
+                )
+                .await
+            }
+            .await;
+            let plan = match prepared {
+                Ok(plan) => plan,
+                Err(e) => return OpOutcome::Retry(e.to_string()),
+            };
             return match crate::api::snapshot::finish_resume_to_active(
                 state,
                 &session,
                 sandbox_id,
-                true,
+                plan,
                 ctx.fence(),
             )
             .await
@@ -1736,8 +1760,8 @@ async fn destroy(ctx: &OpCtx<'_>) -> OpOutcome {
             .fenced_assign_sandbox(id, ctx.epoch, None, None)
             .await
         {
-            Ok(true) => {}
-            Ok(false) => {
+            Ok(_) => {}
+            Err(engram_core::MetaError::Conflict(_)) => {
                 crate::metrics::note_fenced_write();
                 tracing::debug!(session_id = %id, %sandbox_id,
                     "destroy op: fenced binding clear was a no-op (successor re-claimed)");
@@ -2385,7 +2409,7 @@ mod tests {
         state
             .services
             .meta
-            .assign_session_sandbox(id, Some(sandbox_id))
+            .fenced_assign_sandbox(id, 0, Some(sandbox_id), None)
             .await
             .unwrap();
         state
@@ -2829,7 +2853,8 @@ mod tests {
                 _session_id: SessionId,
                 _sandbox_id: SandboxId,
                 _binding_epoch: u64,
-            ) {
+            ) -> Result<(), engram_core::SandboxError> {
+                Ok(())
             }
             async fn unbind_session(&self, _session_id: SessionId) {}
             async fn send_prompt(

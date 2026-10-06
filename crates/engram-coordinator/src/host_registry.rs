@@ -580,6 +580,15 @@ impl HostClient for HostRegistry {
         backend.snapshot(id, fence).await
     }
 
+    async fn snapshot_hold(
+        &self,
+        id: SandboxId,
+        fence: SessionFence,
+    ) -> Result<SnapshotMetadata, SandboxError> {
+        let (_, backend) = self.resolve_owner(id).await?;
+        backend.snapshot_hold(id, fence).await
+    }
+
     async fn snapshot_begin(
         &self,
         id: SandboxId,
@@ -770,12 +779,16 @@ impl HostClient for HostRegistry {
         backend.guest_ip(id).await
     }
 
-    async fn bind_session(&self, session_id: SessionId, sandbox_id: SandboxId, binding_epoch: u64) {
-        if let Ok((_, backend)) = self.resolve_owner(sandbox_id).await {
-            backend
-                .bind_session(session_id, sandbox_id, binding_epoch)
-                .await;
-        }
+    async fn bind_session(
+        &self,
+        session_id: SessionId,
+        sandbox_id: SandboxId,
+        binding_epoch: u64,
+    ) -> Result<(), engram_core::SandboxError> {
+        let (_, backend) = self.resolve_owner(sandbox_id).await?;
+        backend
+            .bind_session(session_id, sandbox_id, binding_epoch)
+            .await
     }
 
     async fn unbind_session(&self, session_id: SessionId) {
@@ -956,7 +969,7 @@ mod tests {
             &self,
             _: engram_core::SessionId,
             _: SandboxId,
-        ) -> Result<(), engram_core::MetaError> {
+        ) -> Result<u64, engram_core::MetaError> {
             unreachable!()
         }
         async fn reserve_and_persist_create(
@@ -990,13 +1003,6 @@ mod tests {
             &self,
             _: engram_core::SessionId,
             _: Option<HostId>,
-        ) -> Result<(), engram_core::MetaError> {
-            Ok(())
-        }
-        async fn assign_session_sandbox(
-            &self,
-            _: engram_core::SessionId,
-            _: Option<SandboxId>,
         ) -> Result<(), engram_core::MetaError> {
             Ok(())
         }
