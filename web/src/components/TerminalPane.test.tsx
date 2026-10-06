@@ -24,11 +24,18 @@
 
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, render, renderHook } from "@testing-library/react";
 import { TerminalPane } from "./TerminalPane";
 import { ThemeProvider, useTheme } from "./theme-provider";
+import * as themeProvider from "./theme-provider";
 import type { ITerminalOptions } from "ghostty-web";
-import { BUILTIN_SCHEMES, contrastRatio, getAppearanceTokens } from "@/lib/appearance";
+import {
+  BUILTIN_SCHEMES,
+  DEFAULT_APPEARANCE,
+  contrastRatio,
+  getAppearanceTokens,
+  getFontOption,
+} from "@/lib/appearance";
 
 // vi.hoisted runs before the vi.mock factory, so the classes are
 // defined when the mock module is constructed AND accessible inside
@@ -446,6 +453,39 @@ function mockFontLoading(load: (font: string) => Promise<FontFace[]>) {
 
 describe("TerminalPane Fira Code loading", () => {
   afterEach(() => Reflect.deleteProperty(document, "fonts"));
+
+  test("loads and measures the default code font when its selected ID is unknown", async () => {
+    const { result, unmount } = renderHook(useTheme, { wrapper: ThemeProvider });
+    const current = result.current;
+    unmount();
+    // Remove provider variables so the terminal must resolve its own font stack.
+    document.documentElement.removeAttribute("style");
+    const theme = vi.spyOn(themeProvider, "useTheme").mockReturnValue({
+      ...current,
+      appearance: {
+        ...current.appearance,
+        fonts: { ...current.appearance.fonts, mono: "unknown-font" },
+      },
+    });
+    const font = deferredFont();
+    const load = vi.fn(() => font.promise);
+    mockFontLoading(load);
+    try {
+      render(<TerminalPane sessionId="s1" />);
+      await flush();
+      const fallback = getFontOption("mono", DEFAULT_APPEARANCE.fonts.mono).family;
+      expect(load).toHaveBeenCalledWith(`13px ${fallback}`);
+      expect(MockTerminal.instances).toHaveLength(0);
+      expect(MockFitAddon.instances).toHaveLength(0);
+      await act(async () => font.resolve());
+      expect(MockTerminal.instances).toHaveLength(1);
+      expect(MockTerminal.instances[0]?.options.fontFamily).toBe(fallback);
+      expect(MockFitAddon.instances[0]?.fit).toHaveBeenCalledTimes(1);
+      expect(MockWebSocket.instances).toHaveLength(1);
+    } finally {
+      theme.mockRestore();
+    }
+  });
 
   test("loads Fira Code before creating and fitting the terminal", async () => {
     const font = deferredFont();

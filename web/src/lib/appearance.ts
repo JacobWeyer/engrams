@@ -1,10 +1,12 @@
 import {
   BUILTIN_SCHEMES,
   DEFAULT_APPEARANCE,
+  FONT_IDS,
   colorSchemeSchema,
   type AppearanceMode,
   type AppearancePreferences,
   type ColorScheme,
+  type FontRole,
   type Theme,
 } from "@engrams/user-preferences";
 export { BUILTIN_SCHEMES, DEFAULT_APPEARANCE } from "@engrams/user-preferences";
@@ -27,24 +29,55 @@ const saira = '"Saira Variable", ' + system;
 const jetbrains = '"JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace';
 const systemMono = 'ui-monospace, "SF Mono", Menlo, Consolas, monospace';
 const firaCode = '"Fira Code Variable", ' + systemMono;
-export const FONT_OPTIONS = {
-  sans: [
-    { id: "system", label: "System", family: system },
-    { id: "saira", label: "Saira", family: saira },
-    { id: "inter", label: "Inter", family: inter },
-  ],
-  display: [
-    { id: "saira", label: "Saira", family: saira },
-    { id: "inter", label: "Inter", family: inter },
-    { id: "system", label: "System", family: system },
-    { id: "georgia", label: "Georgia", family: 'Georgia, "Times New Roman", serif' },
-  ],
-  mono: [
-    { id: "jetbrains", label: "JetBrains Mono", family: jetbrains },
-    { id: "fira-code", label: "Fira Code", family: firaCode },
-    { id: "system", label: "System monospace", family: systemMono },
-  ],
+/** Web labels and font stacks must cover exactly the shared IDs for each role. */
+type FontMetadata = {
+  [Role in FontRole]: Record<(typeof FONT_IDS)[Role][number], { label: string; family: string }>;
 };
+const FONT_METADATA = {
+  sans: {
+    system: { label: "System", family: system },
+    saira: { label: "Saira", family: saira },
+    inter: { label: "Inter", family: inter },
+  },
+  display: {
+    saira: { label: "Saira", family: saira },
+    inter: { label: "Inter", family: inter },
+    system: { label: "System", family: system },
+    georgia: { label: "Georgia", family: 'Georgia, "Times New Roman", serif' },
+  },
+  mono: {
+    jetbrains: { label: "JetBrains Mono", family: jetbrains },
+    "fira-code": { label: "Fira Code", family: firaCode },
+    system: { label: "System monospace", family: systemMono },
+  },
+} satisfies FontMetadata;
+
+type FontOption = { id: string; label: string; family: string };
+
+/** Derive the display order from shared IDs and retain a guaranteed first option. */
+function fontOptions<Id extends string>(
+  ids: readonly [Id, ...Id[]],
+  metadata: Record<Id, { label: string; family: string }>,
+): [FontOption, ...FontOption[]] {
+  const [first, ...rest] = ids;
+  return [{ id: first, ...metadata[first] }, ...rest.map((id) => ({ id, ...metadata[id] }))];
+}
+
+export const FONT_OPTIONS = {
+  sans: fontOptions(FONT_IDS.sans, FONT_METADATA.sans),
+  display: fontOptions(FONT_IDS.display, FONT_METADATA.display),
+  mono: fontOptions(FONT_IDS.mono, FONT_METADATA.mono),
+};
+
+/** Resolve a font ID, using the role's default when the ID is unknown. */
+export function getFontOption(role: FontRole, id: string): FontOption {
+  const options = FONT_OPTIONS[role];
+  return (
+    options.find((font) => font.id === id) ??
+    options.find((font) => font.id === DEFAULT_APPEARANCE.fonts[role]) ??
+    options[0]
+  );
+}
 /** Validate imported colors and report the first invalid palette field. */
 function validateScheme(value: unknown): ColorScheme {
   const result = colorSchemeSchema.safeParse(value);
@@ -406,11 +439,11 @@ export function applyAppearance(
   for (const role of ["sans", "display", "mono"] as const)
     root.style.setProperty(
       `--appearance-font-${role}`,
-Derive one list from the other, or export a single shared `FONT_IDS`/font-metadata source from `@engrams/user-preferences` that both the Zod enum and `FONT_OPTIONS` consume. Failing that, add a test asserting `FONT_OPTIONS[role].map(f => f.id)` equals `FONT_IDS[role]` as sets for each role, and replace the `!` lookups with a checked fallback.
+      getFontOption(role, preferences.fonts[role]).family,
     );
   root.style.setProperty(
     "--appearance-display-stretch",
-    preferences.fonts.display === "saira" ? "108%" : "normal",
+    getFontOption("display", preferences.fonts.display).id === "saira" ? "108%" : "normal",
   );
 }
 /** Apply defaults before authentication resolves the account-specific cache. */

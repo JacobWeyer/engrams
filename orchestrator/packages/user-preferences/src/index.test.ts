@@ -7,6 +7,7 @@ import {
   preferencesUpdateSchema,
   DEFAULT_APPEARANCE,
   BUILTIN_SCHEMES,
+  FONT_IDS,
 } from "./index.ts";
 
 /** Return an independent custom palette for normalization and validation tests. */
@@ -110,6 +111,29 @@ describe("user preferences contract", () => {
         appearanceSchema.parse({ ...appearance, schemeId: copy.id, customSchemes: [copy] })
           .customSchemes,
       ).toEqual([copy]);
+    }
+  });
+  test("the font registry preserves display order and accepts every ID for its role", () => {
+    expect(FONT_IDS).toEqual({
+      sans: ["system", "saira", "inter"],
+      display: ["saira", "inter", "system", "georgia"],
+      mono: ["jetbrains", "fira-code", "system"],
+    });
+    expect(DEFAULT_APPEARANCE.fonts).toEqual({
+      sans: "system",
+      display: "saira",
+      mono: "jetbrains",
+    });
+    for (const role of ["sans", "display", "mono"] as const) {
+      for (const id of FONT_IDS[role]) {
+        const appearance = {
+          ...DEFAULT_APPEARANCE,
+          fonts: { ...DEFAULT_APPEARANCE.fonts, [role]: id },
+        };
+        expect(
+          preferencesUpdateSchema.parse({ expectedRevision: 0, appearance }).appearance.fonts[role],
+        ).toBe(id);
+      }
     }
   });
   test("new font IDs remain limited to their supported roles", () => {

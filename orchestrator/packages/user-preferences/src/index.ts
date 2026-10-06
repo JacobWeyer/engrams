@@ -94,11 +94,11 @@ export const DEFAULT_APPEARANCE: AppearancePreferences = {
   fonts: { sans: "system", display: "saira", mono: "jetbrains" },
 };
 
-/** Accepted font IDs for each role; font loading remains in the web app. */
+/** Accepted font IDs in display order for each role; font loading remains in the web app. */
 export const FONT_IDS = {
   sans: ["system", "saira", "inter"],
-  display: ["saira", "system", "georgia", "inter"],
-  mono: ["jetbrains", "system", "fira-code"],
+  display: ["saira", "inter", "system", "georgia"],
+  mono: ["jetbrains", "fira-code", "system"],
 } as const;
 const idSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const hexSchema = z

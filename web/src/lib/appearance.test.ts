@@ -1,4 +1,4 @@
-import { appearanceSchema } from "@engrams/user-preferences";
+import { appearanceSchema, FONT_IDS } from "@engrams/user-preferences";
 import { beforeEach, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { getPresetRendererTokens } from "./appearance-palettes";
@@ -6,10 +6,12 @@ import {
   APPEARANCE_STORAGE_KEY,
   BUILTIN_SCHEMES,
   DEFAULT_APPEARANCE,
+  FONT_OPTIONS,
   applyAppearance,
   contrastRatio,
   exportScheme,
   getAppearanceTokens,
+  getFontOption,
   importScheme,
   initializeAppearance,
 } from "./appearance";
@@ -18,6 +20,75 @@ beforeEach(() => {
   localStorage.clear();
   vi.restoreAllMocks();
 });
+
+test.each(["sans", "display", "mono"] as const)(
+  "%s font choices match the shared registry and pass account validation",
+  (role) => {
+    expect(FONT_OPTIONS[role].map((font) => font.id)).toEqual(FONT_IDS[role]);
+    for (const font of FONT_OPTIONS[role]) {
+      const preferences = appearanceSchema.parse({
+        ...DEFAULT_APPEARANCE,
+        fonts: { ...DEFAULT_APPEARANCE.fonts, [role]: font.id },
+      });
+      expect(preferences.fonts[role]).toBe(font.id);
+      expect(getFontOption(role, font.id)).toEqual(font);
+    }
+  },
+);
+
+test("applies every supported font with its local fallback stack", () => {
+  const expected = {
+    sans: { system: "system-ui", saira: '"Saira Variable"', inter: '"Inter Variable"' },
+    display: {
+      saira: '"Saira Variable"',
+      inter: '"Inter Variable"',
+      system: "system-ui",
+      georgia: 'Georgia, "Times New Roman"',
+    },
+    mono: {
+      jetbrains: '"JetBrains Mono Variable"',
+      "fira-code": '"Fira Code Variable"',
+      system: "ui-monospace",
+    },
+  };
+  for (const role of ["sans", "display", "mono"] as const)
+    for (const [id, family] of Object.entries(expected[role])) {
+      applyAppearance({
+        ...DEFAULT_APPEARANCE,
+        fonts: { ...DEFAULT_APPEARANCE.fonts, [role]: id },
+      });
+      expect(document.documentElement.style.getPropertyValue(`--appearance-font-${role}`)).toBe(
+        getFontOption(role, id).family,
+      );
+      expect(getFontOption(role, id).family).toContain(family);
+      expect(getFontOption(role, id).family).toContain(role === "mono" ? "monospace" : "serif");
+      if (role === "display")
+        expect(
+          document.documentElement.style.getPropertyValue("--appearance-display-stretch"),
+        ).toBe(id === "saira" ? "108%" : "normal");
+    }
+});
+
+test.each(["sans", "display", "mono"] as const)(
+  "unknown %s font IDs use the existing role default",
+  (role) => {
+    const fallback = getFontOption(role, DEFAULT_APPEARANCE.fonts[role]);
+    expect(getFontOption(role, "unknown-font")).toEqual(fallback);
+    expect(getFontOption(role, "")).toEqual(fallback);
+    expect(() =>
+      applyAppearance({
+        ...DEFAULT_APPEARANCE,
+        fonts: { ...DEFAULT_APPEARANCE.fonts, [role]: "unknown-font" },
+      }),
+    ).not.toThrow();
+    expect(document.documentElement.style.getPropertyValue(`--appearance-font-${role}`)).toBe(
+      fallback.family,
+    );
+    expect(document.documentElement.style.getPropertyValue("--appearance-display-stretch")).toBe(
+      "108%",
+    );
+  },
+);
 
 test("imports and exports palettes with strict hex validation", () => {
   const custom = { ...BUILTIN_SCHEMES[1]!, id: "custom-test", name: "Test" };

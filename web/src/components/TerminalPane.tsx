@@ -3,7 +3,7 @@ import type { ITheme } from "ghostty-web";
 
 import { useTheme } from "./theme-provider";
 import {
-  FONT_OPTIONS,
+  getFontOption,
   getAppearanceTokens,
   resolveScheme,
   type AppearancePreferences,
@@ -97,7 +97,7 @@ function terminalAppearance(
   }
   const fontFamily =
     computed.getPropertyValue("--appearance-font-mono").trim() ||
-    FONT_OPTIONS.mono.find((font) => font.id === appearance.fonts.mono)!.family;
+    getFontOption("mono", appearance.fonts.mono).family;
   return { palette, fontFamily };
 }
 

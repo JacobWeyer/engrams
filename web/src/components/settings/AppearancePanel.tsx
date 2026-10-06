@@ -19,6 +19,7 @@ import {
 import {
   BUILTIN_SCHEMES,
   FONT_OPTIONS,
+  getFontOption,
   resolveScheme,
   contrastRatio,
   exportScheme,
@@ -425,8 +426,7 @@ function SchemePreview({
     Object.entries(tokens).map(([key, value]) => [`--${key}`, value]),
   );
   /** Resolve each independent font choice to its stack of fallback fonts. */
-  const fontFamily = (role: keyof typeof fonts) =>
-    FONT_OPTIONS[role].find((font) => font.id === fonts[role])?.family;
+  const fontFamily = (role: keyof typeof fonts) => getFontOption(role, fonts[role]).family;
   return (
     <section
       aria-label={`${mode === "light" ? "Light" : "Dark"} preview`}
