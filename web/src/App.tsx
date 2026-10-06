@@ -4,6 +4,7 @@ import { TransportProvider } from "@connectrpc/connect-query";
 import { createConnectTransport } from "@connectrpc/connect-web";
 import { AuthProvider, useOptionalAuth } from "./auth/AuthProvider";
 import { RPC_BASE, API_CREDENTIALS } from "./lib/base";
+import { ThemeProvider } from "./components/theme-provider";
 import { router } from "./router";
 
 const queryClient = new QueryClient({
@@ -34,7 +35,9 @@ export function App() {
     <TransportProvider transport={transport}>
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
-          <InnerApp />
+          <ThemeProvider>
+            <InnerApp />
+          </ThemeProvider>
         </AuthProvider>
       </QueryClientProvider>
     </TransportProvider>

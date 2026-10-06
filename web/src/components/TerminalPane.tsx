@@ -1,4 +1,14 @@
 import { useEffect, useRef, useState } from "react";
+import type { ITheme } from "ghostty-web";
+
+import { useTheme } from "./theme-provider";
+import {
+  FONT_OPTIONS,
+  getAppearanceTokens,
+  resolveScheme,
+  type AppearancePreferences,
+  type Theme,
+} from "@/lib/appearance";
 
 import { apiWsUrl } from "../lib/base";
 import { PaneStatus } from "./PaneStatus";
@@ -43,57 +53,52 @@ const SERVER_OUTPUT = 0x30;
 const SERVER_TITLE = 0x31;
 const SERVER_PREFERENCES = 0x32;
 
-// The terminal base (surface, ink, cursor, selection) tracks the
-// Aston-racing theme so the shell reads as part of the page, not a
-// pasted-in cream box. Cursor is the theme's "live" accent: racing green
-// on the celadon paper (lime would be invisible on paper — same reason
-// --ring is green in light mode), lime on the green-black ground.
-//
-// The ANSI 16 are program colors (`ls --color`, `grep`, prompts), not
-// brand tokens — kept legible against both grounds. xterm needs literal
-// hex, so these are resolved here rather than from CSS vars; a theme
-// toggle while the shell is open re-colors on the next mount.
-const ANSI = {
-  black: "#1c2b29",
-  red: "#d9544d",
-  green: "#7faa3f",
-  yellow: "#c7a83c",
-  blue: "#4f93c9",
-  magenta: "#c56aa6",
-  cyan: "#3fa79b",
-  white: "#cdd9c4",
-  brightBlack: "#5a6b63",
-  brightRed: "#e8736b",
-  brightGreen: "#9bc457",
-  brightYellow: "#dcc24f",
-  brightBlue: "#6fb0e0",
-  brightMagenta: "#d98cc0",
-  brightCyan: "#5fc4b6",
-  brightWhite: "#eef3e8",
-};
+const TERMINAL_COLORS = {
+  background: "background",
+  foreground: "foreground",
+  cursor: "cursor",
+  cursorAccent: "cursor-accent",
+  selectionBackground: "selection",
+  selectionForeground: "selection-foreground",
+  black: "black",
+  red: "red",
+  green: "green",
+  yellow: "yellow",
+  blue: "blue",
+  magenta: "magenta",
+  cyan: "cyan",
+  white: "white",
+  brightBlack: "bright-black",
+  brightRed: "bright-red",
+  brightGreen: "bright-green",
+  brightYellow: "bright-yellow",
+  brightBlue: "bright-blue",
+  brightMagenta: "bright-magenta",
+  brightCyan: "bright-cyan",
+  brightWhite: "bright-white",
+} as const satisfies Partial<Record<keyof ITheme, string>>;
 
-const LIGHT_THEME = {
-  background: "#eef3e7", // lab-paper sheet (--background, light)
-  foreground: "#223133", // petrol ink (--foreground, light)
-  cursor: "#5f8f3a", // racing green — visible on paper
-  cursorAccent: "#eef3e7",
-  selectionBackground: "#dae7c8",
-  ...ANSI,
-};
-
-const DARK_THEME = {
-  background: "#11201d", // racing green-black (--background, dark)
-  foreground: "#d7e4cf", // pale sage ink
-  cursor: "#b6e84a", // Aston-F1 lime — pops on the dark ground
-  cursorAccent: "#11201d",
-  selectionBackground: "#21332f",
-  ...ANSI,
-};
-
-function pickTheme() {
-  const dark =
-    typeof document !== "undefined" && document.documentElement.classList.contains("dark");
-  return dark ? DARK_THEME : LIGHT_THEME;
+/** Read literal pane colors and the selected font stack for the terminal renderer. */
+function terminalAppearance(
+  container: HTMLElement,
+  appearance: AppearancePreferences,
+  theme: Theme,
+) {
+  const computed = getComputedStyle(container);
+  const fallback = getAppearanceTokens(resolveScheme(appearance), theme);
+  const palette: ITheme = {};
+  for (const key of Object.keys(TERMINAL_COLORS) as Array<keyof typeof TERMINAL_COLORS>) {
+    const name = `terminal-${TERMINAL_COLORS[key]}`;
+    const color = computed.getPropertyValue(`--${name}`).trim();
+    // The appearance model accepts and emits six-digit hex colors. Canvas and
+    // WASM require literal colors. Read this pane's scope, then use model values
+    // when no appearance stylesheet is attached (for example in a unit test).
+    palette[key] = /^#[\da-f]{6}$/i.test(color) ? color : fallback[name];
+  }
+  const fontFamily =
+    computed.getPropertyValue("--appearance-font-mono").trim() ||
+    FONT_OPTIONS.mono.find((font) => font.id === appearance.fonts.mono)!.family;
+  return { palette, fontFamily };
 }
 
 // Module-level memoization of ghostty-web's WASM init. React's
@@ -113,8 +118,25 @@ function loadGhostty(): Promise<typeof import("ghostty-web")> {
   return ghosttyModulePromise;
 }
 
+/** Keep a shell terminal open while applying account colors and loaded fonts. */
 export function TerminalPane({ sessionId }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const { appearance, theme } = useTheme();
+  const currentAppearance = useRef({ appearance, theme });
+  currentAppearance.current = { appearance, theme };
+  const applyAppearanceRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    // Child effects run before the provider applies its CSS variables.
+    // Read the pane's computed colors after all effects for this render finish.
+    let active = true;
+    queueMicrotask(() => {
+      if (active) applyAppearanceRef.current?.();
+    });
+    return () => {
+      active = false;
+    };
+  }, [appearance, theme]);
   const [status, setStatus] = useState<"loading" | "connecting" | "connected" | "closed" | "error">(
     "loading",
   );
@@ -153,11 +175,33 @@ export function TerminalPane({ sessionId }: TerminalPaneProps) {
         container.removeChild(container.firstChild);
       }
 
+      let initial = terminalAppearance(
+        container,
+        currentAppearance.current.appearance,
+        currentAppearance.current.theme,
+      );
+      // Resolve metrics only after the selected font is available. Re-read
+      // preferences after each await, so a change during loading also configures
+      // the WASM cells with the latest palette before they are created.
+      while (document.fonts) {
+        const loadingFamily = initial.fontFamily;
+        try {
+          await document.fonts.load(`13px ${loadingFamily}`);
+        } catch {
+          /* Use the font's fallback. */
+        }
+        if (disposed) return;
+        initial = terminalAppearance(
+          container,
+          currentAppearance.current.appearance,
+          currentAppearance.current.theme,
+        );
+        if (initial.fontFamily === loadingFamily) break;
+      }
       term = new mod.Terminal({
         fontSize: 13,
-        fontFamily:
-          '"JetBrains Mono Variable", "Berkeley Mono", "SF Mono", ui-monospace, monospace',
-        theme: pickTheme(),
+        fontFamily: initial.fontFamily,
+        theme: initial.palette,
         cursorBlink: true,
         scrollback: 5000,
       });
@@ -165,6 +209,42 @@ export function TerminalPane({ sessionId }: TerminalPaneProps) {
       fitAddon = new mod.FitAddon();
       term.loadAddon(fitAddon);
       term.open(container);
+      let fontUpdate = 0;
+      applyAppearanceRef.current = () => {
+        if (!term || disposed) return;
+        const next = terminalAppearance(
+          container,
+          currentAppearance.current.appearance,
+          currentAppearance.current.theme,
+        );
+        // Ghostty 0.4 supports canvas, cursor, and selection updates through
+        // this public setter. Its WASM cells retain their original default and
+        // ANSI RGB colors: runtime options.theme and OSC color updates are not
+        // supported. Do not remap RGB values; that would corrupt truecolor output.
+        term.renderer?.setTheme(next.palette);
+        if (term.renderer && term.wasmTerm) {
+          term.renderer.render(term.wasmTerm, true, term.viewportY, term);
+        }
+        const revision = ++fontUpdate;
+        if (next.fontFamily === term.options.fontFamily) return;
+        const updateFont = () => {
+          if (disposed || !term || revision !== fontUpdate) return;
+          term.options.fontFamily = next.fontFamily;
+          term.renderer?.remeasureFont();
+          fitAddon?.fit();
+          if (term.renderer && term.wasmTerm) {
+            term.renderer.render(term.wasmTerm, true, term.viewportY, term);
+          }
+          if (ws?.readyState === WebSocket.OPEN) {
+            ws.send(ttyClient.RESIZE + JSON.stringify({ columns: term.cols, rows: term.rows }));
+          }
+        };
+        if (document.fonts) {
+          void document.fonts.load(`13px ${next.fontFamily}`).then(updateFont, updateFont);
+        } else {
+          updateFont();
+        }
+      };
       // ghostty-web creates a hidden <textarea> for keyboard/IME capture
       // with `position:absolute; left:0; top:0` but no `caret-color:
       // transparent`. Without a positioned ancestor the textarea escapes
@@ -179,7 +259,7 @@ export function TerminalPane({ sessionId }: TerminalPaneProps) {
       try {
         const ta = container.querySelector("textarea");
         if (ta) {
-          (ta as HTMLTextAreaElement).style.caretColor = "transparent";
+          ta.style.caretColor = "transparent";
         }
       } catch {
         // ignore — cosmetic-only; don't break the terminal for this
@@ -288,10 +368,13 @@ export function TerminalPane({ sessionId }: TerminalPaneProps) {
           localWs.send(ttyClient.RESIZE + JSON.stringify({ columns: cols, rows }));
         }
       });
+      // Catch up if appearance changed while initialization was in progress.
+      applyAppearanceRef.current?.();
     })();
 
     return () => {
       disposed = true;
+      applyAppearanceRef.current = null;
       try {
         ws?.close();
       } catch {

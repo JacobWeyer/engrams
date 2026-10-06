@@ -40,11 +40,15 @@ const paperTheme = EditorView.theme({
   },
   "&.cm-focused": { outline: "2px solid var(--ring)", outlineOffset: "1px" },
   ".cm-content": {
-    fontFamily: "'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace",
+    fontFamily: "var(--appearance-font-mono)",
     padding: "8px 0",
     caretColor: "var(--foreground)",
   },
-  ".cm-scroller": { lineHeight: "1.5", minHeight: "16rem" },
+  ".cm-scroller": {
+    fontFamily: "var(--appearance-font-mono)",
+    lineHeight: "1.5",
+    minHeight: "16rem",
+  },
   ".cm-gutters": {
     backgroundColor: "var(--muted)",
     color: "var(--muted-foreground)",
@@ -84,6 +88,7 @@ const inkHighlight = HighlightStyle.define([
   { tag: tags.propertyName, color: "var(--foreground)" },
 ]);
 
+/** Attach a run error to a valid line, even when the document has changed. */
 function errorDiagnostics(
   state: EditorState,
   errorLine: number | undefined,
@@ -95,10 +100,12 @@ function errorDiagnostics(
   return [{ from: line.from, to: line.to, severity: "error", message: errorMessage }];
 }
 
+/** Keep editor state and DOM editability consistent. */
 function readOnlyExtensions(readOnly: boolean) {
   return [EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)];
 }
 
+/** Keep one editor view and apply account fonts through inherited appearance variables. */
 export default function CodeEditor(props: CodeEditorProps) {
   const host = useRef<HTMLDivElement | null>(null);
   const view = useRef<EditorView | null>(null);

@@ -23,6 +23,7 @@ RUN npm install -g pnpm@9
 # Lockfile first so the install layer stays warm across source edits.
 COPY web/package.json web/pnpm-lock.yaml /src/web/
 COPY orchestrator/packages/spec-document /src/orchestrator/packages/spec-document
+COPY orchestrator/packages/user-preferences /src/orchestrator/packages/user-preferences
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile
 

@@ -4,9 +4,9 @@ import { highlight, type SyntaxLines } from "@/lib/shiki";
 
 // Syntax highlighting for a fenced code block, in the app's own palette.
 //
-// Each token carries BOTH theme colours as CSS variables, so switching light
-// and dark is a variable swap rather than a re-highlight — no flash, no second
-// tokenization, and the transcript keeps its scroll position.
+// Each token references a shared syntax role, with defaults for both themes.
+// A scheme change replaces the inherited role variables without re-highlighting
+// or replacing token elements, so the transcript keeps its scroll position.
 //
 // Unknown languages, oversized fences and load failures all fall back to plain
 // text. The block's chrome (the ruled box, the header, the ground) belongs to
@@ -20,6 +20,7 @@ const SETTLE_MS = 90;
 
 type Highlighted = { code: string; lines: SyntaxLines };
 
+/** Keep the highlighted prefix visible while a streamed fence receives more text. */
 export function useSyntaxTokens(
   code: string,
   language: string,
@@ -68,6 +69,7 @@ export function useSyntaxTokens(
   return { lines: null, tail: code, complete: false };
 }
 
+/** Preserve token elements while inherited syntax colors change. */
 export function SyntaxTokens({ lines }: { lines: SyntaxLines }) {
   return (
     <>
@@ -83,6 +85,7 @@ export function SyntaxTokens({ lines }: { lines: SyntaxLines }) {
   );
 }
 
+/** Render shared color roles with the token weight, slant, and decoration. */
 function SyntaxToken({ token }: { token: SyntaxLines[number][number] }) {
   const light = token.variants["light"];
   const dark = token.variants["dark"];
@@ -102,6 +105,7 @@ function SyntaxToken({ token }: { token: SyntaxLines[number][number] }) {
   );
 }
 
+/** Render a fenced block with readable plain text until highlighting is ready. */
 export function CodeBlock({
   code,
   language,

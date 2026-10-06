@@ -16,6 +16,7 @@
  */
 
 import { relations, sql } from "drizzle-orm";
+import type { UserPreferencesDocument } from "@engrams/user-preferences";
 import type {
   GapFindingKind,
   GapFindingSeverity,
@@ -1924,6 +1925,20 @@ export const user = pgTable("user", {
   banReason: text("ban_reason"),
   banExpires: timestamp("ban_expires"),
 });
+
+/** Per-user preference document, separate from Better Auth generated fields. */
+export const userPreferences = pgTable(
+  "user_preferences",
+  {
+    userId: text("user_id")
+      .primaryKey()
+      .references(() => user.id, { onDelete: "cascade" }),
+    document: jsonb("document").$type<UserPreferencesDocument>().notNull(),
+    revision: integer("revision").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [check("user_preferences_revision_positive", sql`${table.revision} > 0`)],
+);
 
 export const session = pgTable(
   "session",

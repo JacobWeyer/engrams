@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils";
 
 // The Settings rail: everything a person or an admin configures, in five flat
 // groups with no bundling — no "Operator" hat, no "Org" umbrella. A member sees
-// their own pair plus the feedback they can read; an admin sees the workspace,
+// their own pages plus the feedback they can read; an admin sees the workspace,
 // the runtime it runs on, and the infrastructure underneath.
 
 export interface SettingsItem {
@@ -41,6 +41,7 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
     items: [
       { to: "/settings/profile", label: "Profile", member: true },
       { to: "/settings/credentials", label: "Credentials", member: true },
+      { to: "/settings/appearance", label: "Appearance", member: true },
     ],
   },
   {

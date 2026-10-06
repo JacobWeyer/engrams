@@ -1,6 +1,6 @@
 import { parseDiffFromFile, registerCustomTheme } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
-import { useMemo } from "react";
+import { useMemo, type CSSProperties } from "react";
 
 import { useTheme } from "@/components/theme-provider";
 import { ENGRAMS_DARK_THEME, ENGRAMS_LIGHT_THEME, SYNTAX_THEME_NAMES } from "@/lib/syntax-theme";
@@ -33,11 +33,10 @@ export interface PierreDiffProps {
   after: string;
 }
 
+/** Render a file diff with the resolved account mode and independent font roles. */
 export default function PierreDiff({ path, before, after }: PierreDiffProps) {
-  // Pierre's own "system" themeType follows prefers-color-scheme, but the app's
-  // theme is an explicit stored choice that nothing maps onto `color-scheme` —
-  // so "system" rendered a dark diff inside a light page whenever the two
-  // disagreed. Read the app's theme instead; it is the only one that decides.
+  // The provider resolves explicit and system modes. Pass that resolved value
+  // to Pierre so the diff uses the same mode as the surrounding application.
   const { theme } = useTheme();
   const fileDiff = useMemo(
     () => parseDiffFromFile({ name: path, contents: before }, { name: path, contents: after }),
@@ -46,6 +45,12 @@ export default function PierreDiff({ path, before, after }: PierreDiffProps) {
   return (
     <FileDiff
       fileDiff={fileDiff}
+      style={
+        {
+          "--diffs-font-family": "var(--appearance-font-mono)",
+          "--diffs-header-font-family": "var(--appearance-font-sans)",
+        } as CSSProperties
+      }
       // We render our own header row (path + counts), so suppress Pierre's.
       // A single small diff needs no worker pool / provider.
       options={{

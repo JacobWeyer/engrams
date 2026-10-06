@@ -177,6 +177,7 @@ export function renderWithProviders(
     });
 
   const authValue: AuthState = {
+    userId: "test-user-id",
     principal,
     isAdmin: principal.is_admin,
     ability: abilityFor({ id: "test-user-id", role: principal.is_admin ? "admin" : "user" }),

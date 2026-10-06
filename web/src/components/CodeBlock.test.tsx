@@ -11,7 +11,7 @@ function code(container: HTMLElement): HTMLElement {
   return el;
 }
 
-test("colours a fence in both themes at once", async () => {
+test("uses shared syntax roles for both theme variants", async () => {
   const { container } = render(<CodeBlock code={PYTHON} language="python" />);
 
   // Plain until the grammar loads — the text is right from the first paint.
@@ -27,11 +27,11 @@ test("colours a fence in both themes at once", async () => {
   expect(code(container).textContent).toBe(PYTHON);
   const tokens = container.querySelectorAll<HTMLElement>("span[style*='--syntax-light']");
   expect(tokens.length).toBeGreaterThan(1);
-  // Every token carries a light AND a dark colour, so a theme flip is a
-  // variable swap rather than a second tokenization.
+  // Both theme variants reference shared syntax roles, so changing their
+  // inherited values does not require another tokenization.
   for (const token of tokens) {
-    expect(token.style.getPropertyValue("--syntax-light")).toMatch(/^#/);
-    expect(token.style.getPropertyValue("--syntax-dark")).toMatch(/^#/);
+    expect(token.style.getPropertyValue("--syntax-light")).toMatch(/^var\(--syntax-/);
+    expect(token.style.getPropertyValue("--syntax-dark")).toMatch(/^var\(--syntax-/);
   }
 });
 
@@ -82,4 +82,16 @@ test("keeps the tokens it has while a fence is still streaming", async () => {
     { timeout: 5000 },
   );
   expect(code(container).textContent).toBe(grown);
+});
+
+test("keeps highlighted tokens when custom scheme colors change", async () => {
+  const { container } = render(<CodeBlock code={PYTHON} language="python" />);
+  await waitFor(() => expect(code(container).dataset["highlighted"]).toBe("true"));
+  const keyword = container.querySelector<HTMLElement>("span[style*='--syntax-keyword']");
+  expect(keyword).not.toBeNull();
+  const original = keyword;
+  container.style.setProperty("--syntax-keyword", "#123456");
+  expect(keyword?.style.getPropertyValue("--syntax-light")).toContain("var(--syntax-keyword,");
+  expect(keyword?.style.getPropertyValue("--syntax-dark")).toContain("var(--syntax-keyword,");
+  expect(container.querySelector("span[style*='--syntax-keyword']")).toBe(original);
 });

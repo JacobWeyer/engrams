@@ -25,6 +25,7 @@ const MAX_HIGHLIGHT_CHARS = 100_000;
 
 let highlighterPromise: Promise<HighlighterCore> | null = null;
 
+/** Share one lazy highlighter across code blocks and both color modes. */
 function getHighlighter(): Promise<HighlighterCore> {
   highlighterPromise ??= (async () => {
     const [{ createHighlighterCore }, { createJavaScriptRegexEngine }] = await Promise.all([
@@ -45,6 +46,7 @@ function getHighlighter(): Promise<HighlighterCore> {
 // by the tag we were given, so a miss is remembered too.
 const languages = new Map<string, Promise<boolean>>();
 
+/** Load each grammar once; cache failures so unsupported fences stay readable. */
 async function ensureLanguage(lang: string): Promise<boolean> {
   let pending = languages.get(lang);
   if (!pending) {
@@ -74,7 +76,8 @@ const CACHE_LIMIT = 64;
 
 /**
  * Tokenize `code` against both themes at once. Each token carries a light and a
- * dark colour, so a theme flip is a CSS variable swap, not a re-highlight.
+ * dark fallback for one shared CSS role. Theme and scheme changes replace the
+ * role variables without another highlight pass.
  *
  * Resolves to `null` when the language is unknown, the fence is too long, or
  * Shiki fails — every one of which the caller renders as plain text.
@@ -96,6 +99,7 @@ export function highlight(code: string, lang: string): Promise<SyntaxLines | nul
   return pending;
 }
 
+/** Return both mode variants, or plain-text fallback when highlighting fails. */
 async function tokenize(code: string, lang: string): Promise<SyntaxLines | null> {
   try {
     if (!(await ensureLanguage(lang))) return null;

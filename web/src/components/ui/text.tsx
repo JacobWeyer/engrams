@@ -21,7 +21,8 @@ const textVariants = cva("", {
       // Page-title masthead voice (the PageHeading h1 lives here): the one
       // place Saira appears, set a little wide. Nothing else on the page is
       // tracked, capitalised, or in the display face.
-      display: "font-display text-xl leading-tight font-semibold [font-stretch:108%] text-balance",
+      display:
+        "font-display text-xl leading-tight font-semibold [font-stretch:var(--appearance-display-stretch,108%)] text-balance",
       // The masthead title when the page's subject IS machine data (a session
       // id, a digest): the mono lab-readout voice. NOT tracking-tight — negative
       // spacing on a long hex id runs the glyphs together (worse on the dark

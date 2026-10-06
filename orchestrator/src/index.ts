@@ -12,6 +12,7 @@ import artifactsRoute from "./routes/artifacts.ts";
 import appsRoute from "./routes/apps.ts";
 import connectorLogoRoute from "./routes/connector-logo.ts";
 import meRoute from "./routes/me.ts";
+import userPreferencesRoute from "./routes/user-preferences.ts";
 import adminRoute from "./routes/admin.ts";
 import integrationOpRoute from "./routes/integration-op.ts";
 import integrationOauthRoute from "./routes/integration-oauth.ts";
@@ -434,6 +435,7 @@ app.route("/", appsRoute);
 // Connector logos (redesign): orchestrator-owned brand marks, served for <img>.
 app.route("/", connectorLogoRoute);
 app.route("/", meRoute);
+app.route("/", userPreferencesRoute);
 // ADR 0051 Task 28: admin REST proxy (pause/resume session — no gRPC equiv yet).
 app.route("/", adminRoute);
 // Admin trigger for the IntegrationOp seam (sessionless integration calls).

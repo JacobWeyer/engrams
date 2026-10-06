@@ -141,9 +141,10 @@ change can affect run (orchestrator-only → only orchestrator; web-only → onl
 a coordinator-crate change → Rust lanes incl. macOS/VZ + firecracker + e2e). `bake-images.yml`
 bakes only the changed images. A CI-workflow or detector change re-runs everything.
 
-**The only required status check is the aggregator `CI Gate`** — it always runs, `needs:`
-EVERY lane (Linux, macOS, firecracker, AND the e2e stack), and passes iff each lane
-succeeded-or-skipped. When you add a new lane, add it to the gate's `needs:` (and give it a
+**Required status checks are `CI Gate` and `cla`.** The CLA workflow checks the
+contributor signature. The aggregator `CI Gate` always runs and lists every lane
+(Linux, macOS, firecracker, and the e2e stack) in `needs:`. It passes only when
+each lane succeeds or is skipped. When you add a new lane, add it to the gate's `needs:` (and give it a
 detector flag) — **never add an individual lane as a required check**, or a path-skipped lane
 will wedge the merge queue. **Admin merges skip combined-state validation** —
 each PR was green in isolation, not together. Land batches through the merge queue,

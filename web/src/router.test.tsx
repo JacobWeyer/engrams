@@ -52,6 +52,7 @@ vi.mock("./pages/specmode/NewSpecPage", () => ({
 import { routeTree } from "./router";
 
 const AUTH: AuthState = {
+  userId: "user-1",
   principal: {
     email: "user@example.com",
     display_name: "Test User",
@@ -64,6 +65,7 @@ const AUTH: AuthState = {
 };
 
 const ADMIN_AUTH: AuthState = {
+  userId: "admin-1",
   principal: {
     email: "admin@example.com",
     display_name: "Test Admin",

@@ -272,7 +272,8 @@ CI_SELF_PATHS = [".github/workflows/ci.yml",
                  ".github/actions/",
                  ".github/scripts/detect-rebake-lanes.py"]
 PROTO_PATHS = ["crates/engram-protocol/proto/", "buf.gen.yaml"]
-WEB_PATHS = ["web/", "orchestrator/packages/spec-document/"]
+WEB_PATHS = ["web/", "orchestrator/packages/spec-document/",
+             "orchestrator/packages/user-preferences/"]
 # The public docs + landing site (site/, Astro + Starlight). Its content is
 # hand-written under site/; the API reference is generated at build time
 # from the public app protos, so those gate the lane too. site-deploy.yml
@@ -638,6 +639,7 @@ def main():
             return bake_all_l or proto_l or any_path(cs, [
                 "web/",
                 "orchestrator/packages/spec-document/",
+                "orchestrator/packages/user-preferences/",
                 "docker/web.Dockerfile",
             ])
         if name == "orchestrator":

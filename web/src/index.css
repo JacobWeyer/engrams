@@ -174,14 +174,14 @@
    the only divider left in the shell. */
 .sidebar-section {
   --sidebar: var(--shell);
-  --sidebar-accent: oklch(0.398 0.049 190);
-  --sidebar-accent-foreground: oklch(0.96 0.025 120);
-  --sidebar-border: oklch(0.93 0.03 125 / 11%);
-  border-left: 1px solid oklch(0.93 0.03 125 / 10%);
+  --sidebar-accent: var(--section-sidebar-accent);
+  --sidebar-accent-foreground: var(--section-sidebar-accent-foreground);
+  --sidebar-border: var(--section-sidebar-border);
+  border-left: 1px solid var(--section-divider);
 }
 .dark .sidebar-section {
-  --sidebar-accent: oklch(0.256 0.026 200);
-  --sidebar-border: oklch(0.9 0.035 125 / 8%);
+  --sidebar-accent: var(--section-sidebar-accent);
+  --sidebar-border: var(--section-sidebar-border);
 }
 
 /* ── The lift ───────────────────────────────────────────────────────────
@@ -241,40 +241,40 @@
    re-declares its whole token set rather than only its background — a scoped
    theme, the same technique `.sidebar-section` uses above. */
 .work-pane {
-  --pane: oklch(0.365 0.046 190);
+  --pane: var(--work-pane);
   /* Three separate steps, because they kept collapsing into one: the tab TRACK
      recesses below the pane, the CARD raises above it, and the ACTIVE tab
      (which shadcn paints with --background) lifts furthest. */
-  --muted: oklch(0.322 0.043 190);
-  --background: oklch(0.512 0.053 190);
-  --card: oklch(0.415 0.05 190);
-  --foreground: oklch(0.945 0.028 125);
-  --card-foreground: oklch(0.945 0.028 125);
-  --popover: oklch(0.415 0.05 190);
-  --popover-foreground: oklch(0.945 0.028 125);
-  --muted-foreground: oklch(0.845 0.031 125);
-  --accent: oklch(0.475 0.052 190);
-  --accent-foreground: oklch(0.96 0.025 120);
-  --secondary: oklch(0.455 0.051 190);
-  --secondary-foreground: oklch(0.955 0.025 120);
-  --border: oklch(0.93 0.03 125 / 15%);
-  --input: oklch(0.93 0.03 125 / 18%);
-  --ring: oklch(0.8 0.16 121);
+  --muted: var(--work-muted);
+  --background: var(--work-background);
+  --card: var(--work-card);
+  --foreground: var(--work-foreground);
+  --card-foreground: var(--work-card-foreground);
+  --popover: var(--work-popover);
+  --popover-foreground: var(--work-popover-foreground);
+  --muted-foreground: var(--work-muted-foreground);
+  --accent: var(--work-accent);
+  --accent-foreground: var(--work-accent-foreground);
+  --secondary: var(--work-secondary);
+  --secondary-foreground: var(--work-secondary-foreground);
+  --border: var(--work-border);
+  --input: var(--work-input);
+  --ring: var(--work-ring);
   /* Status hues lift for the dark ground. These are small mono figures — diff
      counts, health telltales — so they must clear 4.5:1 against GREEN, and
      against the CARD specifically, which is the lightest ground any of this
      text lands on. Clearing the pane alone is not enough. Red moves furthest
      (0.52 → 0.85) because a paper-era signal red is the one status hue that
      goes muddy on a green ground rather than merely dim. */
-  --instrument-nominal: oklch(0.82 0.16 148);
-  --instrument-caution: oklch(0.84 0.14 75);
-  --instrument-critical: oklch(0.85 0.13 25);
+  --instrument-nominal: var(--work-instrument-nominal);
+  --instrument-caution: var(--work-instrument-caution);
+  --instrument-critical: var(--work-instrument-critical);
   /* On the cover the graphic and the text values converge: the ground is dark
      in BOTH themes here, so one set clears 4.5:1 for text and 3:1 for dots. */
-  --instrument-nominal-ink: oklch(0.82 0.16 148);
-  --instrument-caution-ink: oklch(0.84 0.14 75);
-  --instrument-critical-ink: oklch(0.85 0.13 25);
-  --destructive: oklch(0.85 0.13 25);
+  --instrument-nominal-ink: var(--work-instrument-nominal-ink);
+  --instrument-caution-ink: var(--work-instrument-caution-ink);
+  --instrument-critical-ink: var(--work-instrument-critical-ink);
+  --destructive: var(--work-destructive);
   color: var(--foreground);
 }
 
@@ -287,13 +287,13 @@
    The rest of the block is the pane's INTERNAL ladder, rebuilt against its own
    ground: track below the pane, card above it, active tab highest. */
 .dark .work-pane {
-  --pane: oklch(0.205 0.023 200);
-  --muted: oklch(0.178 0.022 200);
-  --card: oklch(0.245 0.026 200);
-  --popover: oklch(0.245 0.026 200);
-  --accent: oklch(0.275 0.027 200);
-  --background: oklch(0.29 0.028 200);
-  --border: oklch(0.9 0.035 125 / 9%);
+  --pane: var(--work-pane);
+  --muted: var(--work-muted);
+  --card: var(--work-card);
+  --popover: var(--work-popover);
+  --accent: var(--work-accent);
+  --background: var(--work-background);
+  --border: var(--work-border);
 }
 
 @theme inline {
@@ -341,11 +341,9 @@
      variant="display"`), set 8% wide at 600; the racing read that once came
      from tracked caps on every label now lives in exactly one place per page.
      Hierarchy below the title comes from size and weight. */
-  --font-sans:
-    system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji",
-    "Segoe UI Emoji", sans-serif;
-  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
-  --font-display: "Saira Variable", var(--font-sans);
+  --font-sans: var(--appearance-font-sans);
+  --font-mono: var(--appearance-font-mono);
+  --font-display: var(--appearance-font-display);
 
   /* The type scale. Seven steps, and every size in the app is one of them —
      no `text-[0.7rem]` one-offs. 2xs is the mono floor (ages, counts, ids in
@@ -744,4 +742,52 @@
   white-space: nowrap;
   -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 1.5rem), transparent);
   mask-image: linear-gradient(to right, #000 calc(100% - 1.5rem), transparent);
+}
+
+/* Scoped materials inherit runtime appearance tokens from the root. */
+:root {
+  --section-sidebar-accent: oklch(0.398 0.049 190);
+  --section-sidebar-accent-foreground: oklch(0.96 0.025 120);
+  --section-sidebar-border: oklch(0.93 0.03 125 / 11%);
+  --section-divider: oklch(0.93 0.03 125 / 10%);
+  --work-pane: oklch(0.365 0.046 190);
+  --work-muted: oklch(0.322 0.043 190);
+  --work-background: oklch(0.512 0.053 190);
+  --work-card: oklch(0.415 0.05 190);
+  --work-foreground: oklch(0.945 0.028 125);
+  --work-card-foreground: oklch(0.945 0.028 125);
+  --work-popover: oklch(0.415 0.05 190);
+  --work-popover-foreground: oklch(0.945 0.028 125);
+  --work-muted-foreground: oklch(0.845 0.031 125);
+  --work-accent: oklch(0.475 0.052 190);
+  --work-accent-foreground: oklch(0.96 0.025 120);
+  --work-secondary: oklch(0.455 0.051 190);
+  --work-secondary-foreground: oklch(0.955 0.025 120);
+  --work-border: oklch(0.93 0.03 125 / 15%);
+  --work-input: oklch(0.93 0.03 125 / 18%);
+  --work-ring: oklch(0.8 0.16 121);
+  --work-instrument-nominal: oklch(0.82 0.16 148);
+  --work-instrument-caution: oklch(0.84 0.14 75);
+  --work-instrument-critical: oklch(0.85 0.13 25);
+  --work-instrument-nominal-ink: oklch(0.82 0.16 148);
+  --work-instrument-caution-ink: oklch(0.84 0.14 75);
+  --work-instrument-critical-ink: oklch(0.85 0.13 25);
+  --work-destructive: oklch(0.85 0.13 25);
+  --appearance-font-sans:
+    system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji",
+    "Segoe UI Emoji", sans-serif;
+  --appearance-font-display: "Saira Variable", var(--appearance-font-sans);
+  --appearance-font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
+  --appearance-display-stretch: 108%;
+}
+.dark {
+  --section-sidebar-accent: oklch(0.256 0.026 200);
+  --section-sidebar-border: oklch(0.9 0.035 125 / 8%);
+  --work-pane: oklch(0.205 0.023 200);
+  --work-muted: oklch(0.178 0.022 200);
+  --work-background: oklch(0.29 0.028 200);
+  --work-card: oklch(0.245 0.026 200);
+  --work-popover: oklch(0.245 0.026 200);
+  --work-accent: oklch(0.275 0.027 200);
+  --work-border: oklch(0.9 0.035 125 / 9%);
 }

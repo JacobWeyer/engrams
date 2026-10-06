@@ -23,7 +23,11 @@ describe("SettingsLayout", () => {
   it("shows a member their own pages and the feedback they could always read", () => {
     const groups = visibleSettingsGroups(false);
     expect(groups.map((g) => g.label)).toEqual(["You", "Feedback"]);
-    expect(groups[0]!.items.map((it) => it.label)).toEqual(["Profile", "Credentials"]);
+    expect(groups[0]!.items.map((it) => it.label)).toEqual([
+      "Profile",
+      "Credentials",
+      "Appearance",
+    ]);
   });
 
   it("shows an admin all five groups", () => {

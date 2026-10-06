@@ -194,6 +194,13 @@ jobs:
             .github/scripts/detect-rebake-lanes.py --stdin <<< 'site/package.json'
           grep -qxF 'test_site=true' /tmp/lanes-site.env
           grep -qxF 'test_web=false' /tmp/lanes-site.env
+          # A shared preference contract must test and rebuild both consumers.
+          env GITHUB_OUTPUT=/tmp/lanes-preferences.env python3 \
+            .github/scripts/detect-rebake-lanes.py --stdin \
+            <<< 'orchestrator/packages/user-preferences/src/index.ts'
+          grep -qxF 'test_web=true' /tmp/lanes-preferences.env
+          grep -qxF 'test_orchestrator=true' /tmp/lanes-preferences.env
+          grep -qxF 'images_matrix=["web", "orchestrator"]' /tmp/lanes-preferences.env
 
   # ADR 0122: the deploy templates are user-facing product surface once
   # the repo is open source — a broken chart or module is a broken

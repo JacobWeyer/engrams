@@ -1,9 +1,10 @@
-import { render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { resolveTheme } from "@pierre/diffs";
-import { expect, test } from "vitest";
+import { beforeEach, expect, test } from "vitest";
 
 import PierreDiff from "./PierreDiff";
-import { ThemeProvider } from "@/components/theme-provider";
+import { ThemeProvider, useTheme } from "@/components/theme-provider";
+import type { Theme } from "@/lib/appearance";
 import { SYNTAX_THEME_NAMES } from "@/lib/syntax-theme";
 
 // The diff viewer keeps its own Shiki instance, so the ONE thing holding it to
@@ -11,19 +12,32 @@ import { SYNTAX_THEME_NAMES } from "@/lib/syntax-theme";
 // These cover both halves of that: Pierre resolves the theme we registered, and
 // what it paints is our palette, on the ground the APP chose.
 
+beforeEach(() => {
+  localStorage.clear();
+  document.documentElement.removeAttribute("style");
+});
+
 const BEFORE = 'def greet(name):\n    return "hi"\n';
 const AFTER = 'def greet(name: str) -> str:\n    return f"hello {name}"\n';
 
-async function renderDiff() {
+function ThemeChoice() {
+  const { setTheme } = useTheme();
+  return <button onClick={() => setTheme("dark")}>Select dark</button>;
+}
+
+async function renderDiff(theme: Theme = "light") {
   const { container } = render(
     <ThemeProvider>
+      <ThemeChoice />
       <PierreDiff path="app/greet.py" before={BEFORE} after={AFTER} />
     </ThemeProvider>,
   );
+  if (theme === "dark") fireEvent.click(container.querySelector("button")!);
   const shadow = () => container.querySelector("diffs-container")?.shadowRoot?.innerHTML ?? "";
   await waitFor(
     () => {
       expect(shadow()).toContain("hello");
+      expect(shadow()).toContain(`color-scheme: ${theme}`);
     },
     { timeout: 10_000 },
   );
@@ -37,8 +51,8 @@ test("registers the engrams themes with Pierre", async () => {
     // Pierre reads its add/delete/modify colours off these keys. Without them
     // an expanded diff silently falls back to Pierre's stock green and red and
     // stops matching the +N / −N counts in its own header.
-    expect(theme.colors?.["gitDecoration.addedResourceForeground"]).toMatch(/^#/);
-    expect(theme.colors?.["gitDecoration.deletedResourceForeground"]).toMatch(/^#/);
+    expect(theme.colors?.["gitDecoration.addedResourceForeground"]).toContain("var(--git-");
+    expect(theme.colors?.["gitDecoration.deletedResourceForeground"]).toContain("var(--git-");
   }
 });
 
@@ -56,9 +70,16 @@ test("paints a diff in the engrams palette", async () => {
 test("follows the app's theme, not the operating system's", async () => {
   expect(await renderDiff()).toContain("color-scheme: light");
 
-  // The app stores an explicit choice and never consults prefers-color-scheme.
-  // Pierre's own `themeType: "system"` does, which painted a dark diff inside a
-  // light page whenever the two disagreed.
-  localStorage.setItem("engrams-theme", "dark");
-  expect(await renderDiff()).toContain("color-scheme: dark");
+  // An explicit app choice overrides the operating system. Pierre's own
+  // system mode must not make a second, different decision.
+  cleanup();
+  expect(await renderDiff("dark")).toContain("color-scheme: dark");
+});
+
+test("inherits custom syntax and git roles through Pierre's shadow root", async () => {
+  const html = await renderDiff();
+  expect(html).toContain("--diffs-token-light:var(--syntax-keyword,");
+  expect(html).toContain("--diffs-token-dark:var(--syntax-keyword,");
+  expect(html).toContain("--diffs-light-addition-color:var(--git-added,");
+  expect(html).toContain("--diffs-dark-deletion-color:var(--git-deleted,");
 });

@@ -3,15 +3,17 @@
 // available to anything using `--font-mono` (code, IDs, tabular numbers).
 import "@fontsource-variable/jetbrains-mono/wght.css";
 import "@fontsource-variable/jetbrains-mono/wght-italic.css";
-// Saira carries page titles only (`--font-display`, set 8% wide). The `wdth`
-// file ships the weight AND width axes; the sans body face is system-ui, so
-// there is nothing to import for it.
+// Saira's `wdth` file ships the weight and width axes for its 8% wider page
+// titles. The default body face uses system-ui.
 import "@fontsource-variable/saira/wdth.css";
+// Optional fonts use Fontsource variable weights and its default swap policy.
+import "@fontsource-variable/inter/wght.css";
+import "@fontsource-variable/inter/wght-italic.css";
+import "@fontsource-variable/fira-code/wght.css";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
-import { ThemeProvider } from "./components/theme-provider";
-// index.css pulls in Tailwind once and @imports theme.css (the Lab-Notebook
-// partial kept for the not-yet-migrated SessionDetail transcript subtree).
+import { initializeAppearance } from "./lib/appearance";
+// index.css defines the shared color and font tokens and imports Tailwind once.
 import "./index.css";
 
 // StrictMode intentionally double-mounts effects in dev. Useful in
@@ -21,8 +23,6 @@ import "./index.css";
 // flurries on top of each other and the rendered output overlaps.
 // Until we make TerminalPane fully StrictMode-idempotent, opt out
 // at the root.
-createRoot(document.getElementById("root")!).render(
-  <ThemeProvider>
-    <App />
-  </ThemeProvider>,
-);
+initializeAppearance();
+
+createRoot(document.getElementById("root")!).render(<App />);

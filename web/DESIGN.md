@@ -246,6 +246,72 @@ not merely dim.
 **Body / Label Font:** system UI stack
 **Machine Font:** JetBrains Mono Variable
 
+These are the default fonts. Settings > Appearance lets each user choose body,
+heading, and code fonts independently. The choices use bundled fonts or local
+system fonts. Saira headings keep the 108% width; other heading fonts use their
+normal width. Code blocks, diffs, the code editor, and the terminal use the code
+font choice.
+
+Inter is an additional body and heading font. Fira Code is an additional code
+font. Both are variable fonts served by the app through Fontsource. Inter has
+normal and italic faces; Fira Code has a normal face. The CSS uses
+`font-display: swap` and system fallbacks. Optional fonts are not preloaded;
+the browser downloads their WOFF2 files when displayed text uses them.
+Both fonts use the SIL Open Font License 1.1. The app includes the full notices
+at `/licenses/inter.txt` and `/licenses/fira-code.txt`.
+
+### Personal appearance
+
+Settings > Appearance provides light, dark, and system modes. Engrams is the
+default color scheme; Slate, Sand, Dracula, Catppuccin, Nord, Solarized, and
+Gruvbox are additional presets. Dracula
+uses Dracula Classic in dark mode and Alucard Classic in light mode, from the
+[official Dracula specification](https://draculatheme.com/spec). The preset uses
+the specification's background, foreground, purple accent, and dark UI frame
+colors. Syntax, diff, and terminal roles use the official palettes. UI, syntax,
+and diff text follow the app's contrast rules; these rules can adjust a source
+color for readability. Terminal ANSI colors retain the specified values.
+Catppuccin pairs [Latte and Mocha](https://github.com/catppuccin/catppuccin).
+Nord uses [Snow Storm and Polar Night](https://www.nordtheme.com/docs/colors-and-palettes/).
+[Solarized](https://ethanschoonover.com/solarized/) uses its light and dark
+palettes; light body text uses `base01` to meet the 4.5:1 contrast target.
+[Gruvbox](https://github.com/morhetz/gruvbox) uses medium-contrast light and dark
+palettes. A renderer palette registry supplies each preset's syntax, diff, and
+terminal roles. A color scheme change retains the user's font choices.
+Users can copy a scheme, edit its page, text, accent, and frame colors for both modes, then save
+the copy. The preview shows both modes and text contrast. JSON export and import
+share colors. Reset restores the default mode, colors, and fonts, and retains
+saved custom schemes.
+
+Preferences belong to the signed-in account. The orchestrator stores a versioned
+appearance document and a revision in Postgres. The web app applies edits
+immediately, then saves them through the authenticated preferences API. Settings
+follow the account to another device and survive removal of browser data.
+
+A cache uses the account ID and contains confirmed settings and pending edits.
+The app resolves identity before reading the cache. Account changes cancel old
+requests and reset appearance. Anonymous pages use defaults. System mode follows
+the operating system on each device; it saves the mode, not its resolved color.
+
+Startup, window focus, and reconnect refresh server settings. Revision checks
+prevent silent replacement of another device's changes. Failed saves retain the
+local edit and show a retry action. A conflict requires an explicit choice to
+load server settings or save the local settings. Storage events trigger refresh
+for the same account. Local storage is optional and does not control server saves.
+
+The previous browser-wide value has no known owner. When the server has no saved
+settings, Appearance offers an explicit import or dismissal. The app never
+assigns the old value to an account automatically. Successful import or dismissal
+removes the old value.
+
+Custom colors define the page, cards, rails, and work pane through semantic CSS
+tokens. Scoped rail and pane tokens retain their surface hierarchy. Syntax and
+diff colors use shared roles; status labels and glyphs retain their meaning.
+The terminal updates its background, cursor, selection, and font without a shell
+reconnect. Ghostty 0.4.0 cannot change existing text-cell colors through its public
+API; existing text cells retain foreground, background, and ANSI colors from
+the terminal's initial palette.
+
 **Character:** One workhorse family carries chrome, headings and prose; the
 display face appears exactly once per page, on the title (`Text
 variant="display"`). The borrowed, generated feel came from tracked caps on

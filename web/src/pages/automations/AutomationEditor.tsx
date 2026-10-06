@@ -365,7 +365,7 @@ export function AutomationEditor({
         <header className="@container flex min-h-[60px] min-w-0 shrink-0 items-center gap-3 border-b px-6 py-2.5">
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
             {builtin ? (
-              <h1 className="truncate font-display text-lg font-semibold [font-stretch:108%]">
+              <h1 className="truncate font-display text-lg font-semibold [font-stretch:var(--appearance-display-stretch,108%)]">
                 {name}
               </h1>
             ) : (
@@ -376,7 +376,7 @@ export function AutomationEditor({
                 placeholder="Name your automation"
                 aria-invalid={nameError ? true : undefined}
                 className={cn(
-                  "w-full min-w-0 bg-transparent font-display text-lg font-semibold [font-stretch:108%] outline-none placeholder:text-muted-foreground/60",
+                  "w-full min-w-0 bg-transparent font-display text-lg font-semibold [font-stretch:var(--appearance-display-stretch,108%)] outline-none placeholder:text-muted-foreground/60",
                   "rounded-sm focus-visible:ring-2 focus-visible:ring-ring/60",
                 )}
               />

@@ -35,6 +35,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
 export interface AuthState {
+  userId: string;
   /** Always present for children — the provider only renders them once the
    * principal has resolved. */
   principal: Principal;
@@ -122,6 +123,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const value: AuthState = {
+    userId: session.user.id,
     principal,
     isAdmin,
     ability,

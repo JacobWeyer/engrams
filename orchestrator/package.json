@@ -19,6 +19,7 @@
     "@connectrpc/connect-node": "^2.1.1",
     "@dbos-inc/dbos-sdk": "^4.21.6",
     "@engrams/spec-document": "file:./packages/spec-document",
+    "@engrams/user-preferences": "file:./packages/user-preferences",
     "@hono/node-server": "^2.0.4",
     "@jitl/quickjs-singlefile-mjs-release-sync": "^0.32.0",
     "@openrouter/ai-sdk-provider": "^3.0.0",

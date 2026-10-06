@@ -30,6 +30,7 @@ WORKDIR /app/orchestrator
 # runtime runs the .ts entry directly via Bun, no build/transpile step.
 COPY orchestrator/package.json orchestrator/bun.lock ./
 COPY orchestrator/packages/spec-document ./packages/spec-document
+COPY orchestrator/packages/user-preferences ./packages/user-preferences
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install --frozen-lockfile --production
 

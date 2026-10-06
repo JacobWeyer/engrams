@@ -56,6 +56,7 @@ import { Storage } from "./pages/Storage";
 import { SettingsLayout } from "./pages/settings/SettingsLayout";
 import { Members } from "./pages/Members";
 import { ImagesPanel } from "./components/settings/ImagesPanel";
+import { AppearancePanel } from "./components/settings/AppearancePanel";
 import { ProfilePanel } from "./components/settings/ProfilePanel";
 import { RegistriesPanel } from "./components/settings/RegistriesPanel";
 import { SecretsPanel } from "./components/settings/SecretsPanel";
@@ -402,6 +403,11 @@ const profileRoute = createRoute({
   path: "profile",
   component: ProfilePanel,
 });
+const appearanceRoute = createRoute({
+  getParentRoute: () => settingsLayoutRoute,
+  path: "appearance",
+  component: AppearancePanel,
+});
 const tokensRoute = createRoute({
   getParentRoute: () => settingsLayoutRoute,
   path: "credentials",
@@ -709,6 +715,7 @@ export const routeTree = rootRoute.addChildren([
     settingsLayoutRoute.addChildren([
       settingsIndexRoute,
       profileRoute,
+      appearanceRoute,
       tokensRoute,
       legacyTokensRoute,
       membersRoute,
