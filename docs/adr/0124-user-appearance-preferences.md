@@ -1,6 +1,6 @@
 # ADR 0124: User appearance preferences
 
-Status: Proposed (2026-10-06)
+Status: Accepted (2026-10-06)
 
 ## Context
 
@@ -52,3 +52,34 @@ server document. Anonymous pages use default appearance without account data.
 Both web and orchestrator images must include the shared package. Changes to
 it must select both test lanes and both image builds. Tests must cover real
 Postgres concurrency, account isolation, retry, migration, and browser reloads.
+
+## Implementation record
+
+The commit chain starts with `bed755c7` (Proposed decision), followed by
+`b55d235f95f9` (shared contract, migration, API, web controls, and tests). This
+record accepts the decision after those checks.
+
+Migration `0095_user_preferences` follows the current migration journal. It
+adds the account document and revision constraint without changing applied
+migrations. Both Docker images include the shared package, and path detection
+selects both consumers.
+
+The initial implementation needed two corrections during review. A clean tab
+could clear another tab's cached draft. Cache writes now preserve foreign
+pending edits and their base revision. Terminal selection text now has an
+explicit foreground color with at least 4.5:1 contrast; reference ANSI colors
+remain unchanged.
+
+The appearance controls include custom color schemes, independent fonts, and
+Dracula, Catppuccin, Nord, Solarized, and Gruvbox presets. Optional Inter and
+Fira Code fonts use local Fontsource assets with their complete license notices.
+
+Validation passed: 1,046 web tests in 151 files; 20 shared-contract, API,
+real-Postgres, and migration-journal tests; both browser suites under the
+production CSP; web formatting, lint, and build; and orchestrator type checking.
+A fresh Postgres 18 database accepted all migrations. A repeat migration made
+no changes. Workflow YAML parses, the shared-package path selects both test
+lanes and images, and actionlint has no findings beyond those on the base branch.
+
+Rust checks were not needed for this web and orchestrator change. The
+current-head CI Gate supplies the final repository result before merge.
